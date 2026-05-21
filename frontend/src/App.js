@@ -34,6 +34,9 @@ import AboutPage from "./pages/AboutPage";
 import SearchResultsPage from "./pages/SearchResultsPage";
 import AdminDigestPage from "./pages/AdminDigestPage";
 import AdminReportsPage from "./pages/AdminReportsPage";
+import AdminCommunitySourcesPage from "./pages/AdminCommunitySourcesPage";
+import CommunitySourcesPage from "./pages/CommunitySourcesPage";
+import CommunitySourceSubmitPage from "./pages/CommunitySourceSubmitPage";
 import UnsubscribePage from "./pages/UnsubscribePage";
 import NotFoundPage from "./pages/NotFoundPage";
 
@@ -80,6 +83,9 @@ function AppRouter() {
               <Route path="/search" element={<SearchResultsPage />} />
               <Route path="/admin/digest" element={<AdminDigestPage />} />
               <Route path="/admin/reports" element={<AdminReportsPage />} />
+              <Route path="/admin/community-sources" element={<AdminCommunitySourcesPage />} />
+              <Route path="/community-sources" element={<CommunitySourcesPage />} />
+              <Route path="/community-sources/submit" element={<CommunitySourceSubmitPage />} />
               <Route path="/unsubscribe" element={<UnsubscribePage />} />
               {/* Catch-all 404 — must stay last inside the inner Routes */}
               <Route path="*" element={<NotFoundPage />} />

@@ -22,6 +22,16 @@ const REASONS = [
   { value: 'other', label: 'Something else' },
 ];
 
+// Human-friendly singular noun for the dialog title. Falls back to the
+// raw target_type if a new type slips in without a label.
+const TARGET_LABEL = {
+  post: 'post',
+  comment: 'comment',
+  event: 'event',
+  user: 'user',
+  creator: 'community source',
+};
+
 /**
  * A small flag-icon button that opens a "Report this" dialog.
  *
@@ -90,7 +100,7 @@ export default function ReportButton({ targetType, targetId, variant = 'icon', c
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent onClick={(e) => e.stopPropagation()}>
           <DialogHeader>
-            <DialogTitle>Report this {targetType}</DialogTitle>
+            <DialogTitle>Report this {TARGET_LABEL[targetType] || targetType}</DialogTitle>
             <DialogDescription>
               Help keep LocalDrift welcoming. We'll review the report and take action if needed.
               False reports may affect your account.

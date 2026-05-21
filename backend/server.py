@@ -2725,7 +2725,7 @@ async def unified_search(
 # thresholds, no mod logs. We can layer those on once the launch shows
 # what abuse actually looks like.
 
-REPORT_TARGET_TYPES = {"post", "comment", "event", "user"}
+REPORT_TARGET_TYPES = {"post", "comment", "event", "user", "creator"}
 REPORT_REASONS = {"spam", "abuse", "inappropriate", "misinformation", "other"}
 REPORT_STATUSES = {"pending", "reviewed", "actioned", "dismissed"}
 
@@ -2773,6 +2773,15 @@ async def _maybe_auto_hide(target_type: str, target_id: str) -> bool:
             {"$set": {"is_hidden": True, "auto_hidden_at": now_iso}},
         )
         return r.modified_count > 0
+    if target_type == "creator":
+        # Community-source directory entries — flip is_hidden so the
+        # public list filters them out. The admin queue still surfaces
+        # them so we can review.
+        r = await db.community_sources.update_one(
+            {"source_id": target_id, "is_hidden": {"$ne": True}},
+            {"$set": {"is_hidden": True, "auto_hidden_at": now_iso}},
+        )
+        return r.modified_count > 0
     return False
 
 
@@ -2798,6 +2807,12 @@ async def _restore_target(target_type: str, target_id: str) -> bool:
     if target_type == "event":
         r = await db.events.update_one(
             {"event_id": target_id},
+            {"$set": {"is_hidden": False}, "$unset": {"auto_hidden_at": ""}},
+        )
+        return r.modified_count > 0
+    if target_type == "creator":
+        r = await db.community_sources.update_one(
+            {"source_id": target_id},
             {"$set": {"is_hidden": False}, "$unset": {"auto_hidden_at": ""}},
         )
         return r.modified_count > 0
@@ -2840,6 +2855,12 @@ async def submit_report(data: ReportCreate, request: Request):
             snapshot = t or {}
         elif data.target_type == "event":
             t = await db.events.find_one({"event_id": data.target_id}, {"_id": 0, "title": 1, "description": 1, "organizer_id": 1, "organizer_name": 1})
+            snapshot = t or {}
+        elif data.target_type == "creator":
+            t = await db.community_sources.find_one(
+                {"source_id": data.target_id},
+                {"_id": 0, "name": 1, "description": 1, "category": 1, "links": 1},
+            )
             snapshot = t or {}
     except Exception:
         snapshot = {}
@@ -2951,6 +2972,9 @@ async def admin_review_report(
         elif target_type == "event":
             r = await db.events.delete_one({"event_id": target_id})
             deleted_target = r.deleted_count > 0
+        elif target_type == "creator":
+            r = await db.community_sources.delete_one({"source_id": target_id})
+            deleted_target = r.deleted_count > 0
 
     await db.reports.update_one(
         {"report_id": report_id},
@@ -2968,6 +2992,284 @@ async def admin_review_report(
         "deleted_target": deleted_target,
         "restored_target": restored_target,
     }
+
+
+# ============= COMMUNITY SOURCES DIRECTORY =============
+# Public-facing directory of local content creators (subreddit mods,
+# FB page owners, IG accounts, blogs, podcasts) who want to be featured
+# on LocalDrift. Self-service signup, admin approval at intake. Reuses
+# the existing reports + auto-hide infrastructure (target_type="creator"
+# is wired into _maybe_auto_hide/_restore_target above).
+
+COMMUNITY_SOURCE_CATEGORIES = {
+    "subreddit", "facebook_group", "facebook_page", "instagram",
+    "tiktok", "youtube", "blog", "newsletter", "podcast", "other",
+}
+
+COMMUNITY_SOURCE_STATUSES = {"pending", "approved", "rejected", "hidden"}
+
+
+def _slugify(name: str) -> str:
+    """Lowercase + hyphenate + strip junk. Used for dedup of submissions
+    (two people independently submitting "Wilmington Foodies" should
+    collide and we surface the existing record to the second submitter)."""
+    s = (name or "").strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    s = re.sub(r"-+", "-", s).strip("-")
+    return s[:80]
+
+
+class CommunitySourceLink(BaseModel):
+    platform: str  # e.g. "reddit", "instagram", "youtube" — free-form short label
+    url: str
+    handle: Optional[str] = None  # e.g. "@wilmingtonfoodies" — display-only
+
+
+class CommunitySourceSubmit(BaseModel):
+    name: str
+    description: str
+    category: str
+    coverage_tags: List[str] = []
+    links: List[CommunitySourceLink]
+    submitter_email: EmailStr
+    submitter_name: Optional[str] = None
+
+
+class CommunitySourceAdminUpdate(BaseModel):
+    status: str  # approved | rejected | hidden | pending
+    admin_notes: Optional[str] = None
+    # Optional in-place edits an admin can make at review time.
+    patch_name: Optional[str] = None
+    patch_description: Optional[str] = None
+    patch_category: Optional[str] = None
+
+
+def _public_source_projection(doc: dict) -> dict:
+    """Strip private fields before returning to public consumers."""
+    if not doc:
+        return doc
+    return {
+        "source_id": doc.get("source_id"),
+        "name": doc.get("name"),
+        "slug": doc.get("slug"),
+        "description": doc.get("description"),
+        "category": doc.get("category"),
+        "coverage_tags": doc.get("coverage_tags") or [],
+        "links": doc.get("links") or [],
+        "created_at": doc.get("created_at"),
+    }
+
+
+@api_router.post("/community-sources")
+async def submit_community_source(data: CommunitySourceSubmit, request: Request):
+    """Public: submit a creator for inclusion in the directory.
+    Goes into the admin pending queue; not visible publicly until approved.
+    Slug-deduped — submitting a name that collides with an existing
+    pending/approved row returns 409 with the conflicting source's
+    public projection so the user can see "you're already in the queue"
+    rather than getting a confusing error."""
+    name = (data.name or "").strip()
+    description = (data.description or "").strip()
+    if len(name) < 3 or len(name) > 80:
+        raise HTTPException(status_code=400, detail="Name must be 3-80 characters")
+    if len(description) > 500:
+        raise HTTPException(status_code=400, detail="Description must be 500 characters or less")
+    if data.category not in COMMUNITY_SOURCE_CATEGORIES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"category must be one of {sorted(COMMUNITY_SOURCE_CATEGORIES)}",
+        )
+    if not data.links or not any((lnk.url or "").strip() for lnk in data.links):
+        raise HTTPException(status_code=400, detail="At least one link is required")
+
+    # Light URL validation — reject anything that doesn't look like a URL.
+    # Strict validation belongs at the schema layer but EmailStr / HttpUrl
+    # for the link URLs would be too strict (we want to accept "reddit.com/r/x"
+    # style entries too). Just require a dot.
+    for lnk in data.links:
+        url = (lnk.url or "").strip()
+        if not url or "." not in url:
+            raise HTTPException(status_code=400, detail=f"Invalid URL: {url!r}")
+
+    slug = _slugify(name)
+    if not slug:
+        raise HTTPException(status_code=400, detail="Name contains no valid characters")
+
+    # Dedup against existing pending/approved rows. Rejected/hidden don't
+    # block re-submission (legitimate creator may want to try again).
+    existing = await db.community_sources.find_one(
+        {"slug": slug, "status": {"$in": ["pending", "approved"]}},
+        {"_id": 0},
+    )
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "A submission with this name already exists",
+                "existing": _public_source_projection(existing),
+                "existing_status": existing.get("status"),
+            },
+        )
+
+    # If the submitter is signed in, attach their user_id for follow-up.
+    user = await _resolve_user_from_request(request)
+
+    source_id = f"csrc_{uuid.uuid4().hex[:12]}"
+    doc = {
+        "source_id": source_id,
+        "name": name,
+        "slug": slug,
+        "description": description,
+        "category": data.category,
+        "coverage_tags": [t.strip().lower() for t in (data.coverage_tags or []) if t.strip()][:10],
+        "links": [
+            {
+                "platform": (lnk.platform or "").strip()[:30] or "other",
+                "url": (lnk.url or "").strip()[:500],
+                "handle": ((lnk.handle or "").strip() or None),
+            }
+            for lnk in data.links
+        ],
+        "submitter_email": data.submitter_email.lower(),
+        "submitter_name": (data.submitter_name or "").strip() or None,
+        "submitter_user_id": user["user_id"] if user else None,
+        "status": "pending",
+        "is_hidden": False,
+        "auto_hidden_at": None,
+        "admin_notes": None,
+        "reviewed_at": None,
+        "reviewed_by": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "ip": request.client.host if request.client else None,
+    }
+    await db.community_sources.insert_one(doc)
+    return {"source_id": source_id, "status": "pending"}
+
+
+@api_router.get("/community-sources")
+async def list_community_sources(
+    category: Optional[str] = None,
+    q: Optional[str] = None,
+    limit: int = 200,
+):
+    """Public: list approved + visible community sources. Optional
+    category filter + substring search on name/description/tags."""
+    query: dict = {"status": "approved", "is_hidden": {"$ne": True}}
+    if category:
+        if category not in COMMUNITY_SOURCE_CATEGORIES:
+            raise HTTPException(status_code=400, detail="invalid category")
+        query["category"] = category
+    if q:
+        pattern = re.escape(q.strip())
+        if pattern:
+            query["$or"] = [
+                {"name": {"$regex": pattern, "$options": "i"}},
+                {"description": {"$regex": pattern, "$options": "i"}},
+                {"coverage_tags": {"$elemMatch": {"$regex": pattern, "$options": "i"}}},
+            ]
+    cursor = db.community_sources.find(query, {"_id": 0}).sort("name", 1).limit(limit)
+    items = await cursor.to_list(limit)
+    return {"count": len(items), "items": [_public_source_projection(d) for d in items]}
+
+
+@api_router.get("/community-sources/{source_id}")
+async def get_community_source(source_id: str):
+    """Public: fetch a single approved + visible community source by id."""
+    doc = await db.community_sources.find_one(
+        {"source_id": source_id, "status": "approved", "is_hidden": {"$ne": True}},
+        {"_id": 0},
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Community source not found")
+    return _public_source_projection(doc)
+
+
+@api_router.get("/admin/community-sources")
+async def admin_list_community_sources(
+    request: Request,
+    token: Optional[str] = None,
+    status_filter: Optional[str] = None,
+    limit: int = 200,
+):
+    """Admin: list community sources for the moderation queue.
+    Defaults to status=pending. Returns full docs incl. submitter_email."""
+    _check_admin(request, token)
+    query: dict = {}
+    if status_filter:
+        if status_filter not in COMMUNITY_SOURCE_STATUSES:
+            raise HTTPException(status_code=400, detail="invalid status filter")
+        query["status"] = status_filter
+    else:
+        query["status"] = "pending"
+    cursor = db.community_sources.find(query, {"_id": 0}).sort("created_at", -1).limit(limit)
+    items = await cursor.to_list(limit)
+    return {"count": len(items), "items": items}
+
+
+@api_router.post("/admin/community-sources/{source_id}/review")
+async def admin_review_community_source(
+    source_id: str,
+    body: CommunitySourceAdminUpdate,
+    request: Request,
+    token: Optional[str] = None,
+):
+    """Admin: approve / reject / hide / unhide a community source.
+    Optionally edit name/description/category at review time."""
+    _check_admin(request, token)
+    if body.status not in COMMUNITY_SOURCE_STATUSES:
+        raise HTTPException(status_code=400, detail=f"status must be one of {sorted(COMMUNITY_SOURCE_STATUSES)}")
+
+    existing = await db.community_sources.find_one({"source_id": source_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Community source not found")
+
+    updates: dict = {
+        "status": body.status,
+        "reviewed_at": datetime.now(timezone.utc).isoformat(),
+        "admin_notes": (body.admin_notes or "").strip()[:1000] or None,
+    }
+    # In-place edits at review time (correct typos, sharpen descriptions).
+    if body.patch_name:
+        new_name = body.patch_name.strip()
+        if len(new_name) < 3 or len(new_name) > 80:
+            raise HTTPException(status_code=400, detail="Patched name must be 3-80 characters")
+        updates["name"] = new_name
+        updates["slug"] = _slugify(new_name)
+    if body.patch_description is not None:
+        new_desc = body.patch_description.strip()
+        if len(new_desc) > 500:
+            raise HTTPException(status_code=400, detail="Patched description too long")
+        updates["description"] = new_desc
+    if body.patch_category:
+        if body.patch_category not in COMMUNITY_SOURCE_CATEGORIES:
+            raise HTTPException(status_code=400, detail="invalid category in patch")
+        updates["category"] = body.patch_category
+
+    # Setting status back to "approved" should clear any prior auto-hide.
+    if body.status == "approved":
+        updates["is_hidden"] = False
+        updates["auto_hidden_at"] = None
+
+    await db.community_sources.update_one({"source_id": source_id}, {"$set": updates})
+    return {"source_id": source_id, "status": body.status}
+
+
+@api_router.delete("/admin/community-sources/{source_id}")
+async def admin_delete_community_source(
+    source_id: str,
+    request: Request,
+    token: Optional[str] = None,
+):
+    """Admin: permanently delete a community source (and any related
+    reports). The "remove in one click" requirement."""
+    _check_admin(request, token)
+    r = await db.community_sources.delete_one({"source_id": source_id})
+    if r.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Community source not found")
+    # Cascade: drop any reports filed against this creator so they don't
+    # clutter the report queue with orphaned entries.
+    await db.reports.delete_many({"target_type": "creator", "target_id": source_id})
+    return {"deleted": True, "source_id": source_id}
 
 
 # ============= LOCAL NEWS =============
