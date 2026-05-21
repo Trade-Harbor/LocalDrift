@@ -52,6 +52,7 @@ const TARGET_LABEL = {
   comment: 'Comment',
   event: 'Event',
   user: 'User',
+  creator: 'Community source',
 };
 
 export default function AdminReportsPage() {

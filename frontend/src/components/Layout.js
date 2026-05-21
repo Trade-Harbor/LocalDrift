@@ -156,8 +156,15 @@ export const Navbar = () => {
             >
               Community
             </Link>
-            <Link 
-              to="/pricing" 
+            <Link
+              to="/community-sources"
+              className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+              data-testid="nav-community-sources"
+            >
+              Local Voices
+            </Link>
+            <Link
+              to="/pricing"
               className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
               data-testid="nav-pricing"
             >
@@ -335,8 +342,15 @@ export const Navbar = () => {
               >
                 Community
               </Link>
-              <Link 
-                to="/pricing" 
+              <Link
+                to="/community-sources"
+                className="px-2 py-2 text-sm font-medium hover:bg-muted rounded-lg transition-colors"
+                onClick={() => setMobileMenuOpen(false)}
+              >
+                Local Voices
+              </Link>
+              <Link
+                to="/pricing"
                 className="px-2 py-2 text-sm font-medium hover:bg-muted rounded-lg transition-colors"
                 onClick={() => setMobileMenuOpen(false)}
               >
