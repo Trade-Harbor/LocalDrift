@@ -7,6 +7,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import re
 import asyncio
+import email_helper as _email_helper
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
@@ -2320,6 +2321,24 @@ async def submit_feedback(data: FeedbackCreate, request: Request):
         "resolved": False,
     }
     await db.feedback.insert_one(doc)
+
+    # Fire-and-forget admin notification so I see new feedback without
+    # having to remember to check /admin/feedback. No-ops if
+    # ADMIN_NOTIFY_EMAIL isn't set.
+    site_url = os.environ.get("PUBLIC_FRONTEND_URL", "https://www.localdrift.app").rstrip("/")
+    notify_subject = f"[LocalDrift] New feedback: {doc['feedback_type']}"
+    notify_html = f"""
+        <p><strong>Type:</strong> {escape_html(doc['feedback_type'])}</p>
+        <p><strong>From:</strong> {escape_html(doc.get('name') or '(anonymous)')}
+        {f"&lt;{escape_html(doc['email'])}&gt;" if doc.get('email') else ''}</p>
+        <p><strong>Page:</strong> {escape_html(doc.get('page_url') or '(not provided)')}</p>
+        <hr>
+        <p style="white-space:pre-wrap;">{escape_html(doc['message'])}</p>
+        <hr>
+        <p><a href="{site_url}/admin/feedback">Review in admin</a> (paste your admin token)</p>
+    """
+    _fire_admin_notification(notify_subject, notify_html)
+
     return {"feedback_id": feedback_id, "status": "received"}
 
 
@@ -2394,7 +2413,7 @@ async def admin_list_email_signups(
 # Both can be swapped without touching the routes here.
 
 import digest as _digest
-import email_helper as _email_helper
+# email_helper is already imported at the top of the file
 
 
 def _default_digest_range() -> tuple[str, str]:
@@ -2886,6 +2905,34 @@ async def submit_report(data: ReportCreate, request: Request):
     # it pending admin review. Same user reporting twice doesn't stack.
     auto_hidden = await _maybe_auto_hide(data.target_type, data.target_id)
 
+    # Fire-and-forget admin notification. Surfaces "something was reported"
+    # without forcing admin to remember to check /admin/reports.
+    site_url = os.environ.get("PUBLIC_FRONTEND_URL", "https://www.localdrift.app").rstrip("/")
+    target_label = {"post": "forum post", "comment": "comment", "event": "event", "user": "user", "creator": "community source"}.get(data.target_type, data.target_type)
+    snap_preview = ""
+    if snapshot:
+        title = snapshot.get("title") or snapshot.get("name") or ""
+        body = snapshot.get("content") or snapshot.get("description") or ""
+        if title:
+            snap_preview += f"<p><strong>{escape_html(title)}</strong></p>"
+        if body:
+            snap_preview += f"<p style='white-space:pre-wrap;'>{escape_html(body[:400])}{'…' if len(body) > 400 else ''}</p>"
+    notify_subject = f"[LocalDrift] Report: {data.reason} on a {target_label}{' (AUTO-HIDDEN)' if auto_hidden else ''}"
+    notify_html = f"""
+        <p><strong>Reason:</strong> {escape_html(data.reason)}</p>
+        <p><strong>Target:</strong> {escape_html(target_label)} <code>{escape_html(data.target_id)}</code></p>
+        <p><strong>Reporter:</strong> {escape_html(user.get('name') or 'unknown')}
+        {f"&lt;{escape_html(user.get('email', ''))}&gt;" if user.get('email') else ''}</p>
+        {f"<p><strong>Reporter notes:</strong></p><p style='white-space:pre-wrap;'>{escape_html(data.details)}</p>" if data.details else ''}
+        <hr>
+        <p><em>Target snapshot:</em></p>
+        {snap_preview or '<p>(no preview available)</p>'}
+        <hr>
+        {'<p><strong>This content was auto-hidden</strong> (3+ distinct reporters). Review to confirm or restore.</p>' if auto_hidden else ''}
+        <p><a href="{site_url}/admin/reports">Review in admin</a> (paste your admin token)</p>
+    """
+    _fire_admin_notification(notify_subject, notify_html)
+
     return {"report_id": report_id, "status": "received", "auto_hidden": auto_hidden}
 
 
@@ -3143,6 +3190,24 @@ async def submit_community_source(data: CommunitySourceSubmit, request: Request)
         "ip": request.client.host if request.client else None,
     }
     await db.community_sources.insert_one(doc)
+
+    # Fire-and-forget admin notification — surfaces new submissions
+    # without admin having to remember to check the queue.
+    site_url = os.environ.get("PUBLIC_FRONTEND_URL", "https://www.localdrift.app").rstrip("/")
+    primary_link = (data.links[0].url if data.links else "")
+    notify_subject = f"[LocalDrift] New community source submitted: {doc['name']}"
+    notify_html = f"""
+        <p><strong>{escape_html(doc['name'])}</strong>
+        <span style="color:#6b7280;">({escape_html(doc['category'])})</span></p>
+        {f"<p style='white-space:pre-wrap;'>{escape_html(doc['description'])}</p>" if doc.get('description') else ''}
+        {f"<p>Primary link: <a href='{escape_html(primary_link)}'>{escape_html(primary_link)}</a></p>" if primary_link else ''}
+        <p><strong>Submitter:</strong> {escape_html(doc.get('submitter_name') or '(no name)')}
+        &lt;{escape_html(doc['submitter_email'])}&gt;</p>
+        <hr>
+        <p><a href="{site_url}/admin/community-sources">Review in admin</a> (paste your admin token)</p>
+    """
+    _fire_admin_notification(notify_subject, notify_html)
+
     return {"source_id": source_id, "status": "pending"}
 
 
@@ -3286,6 +3351,26 @@ async def get_news(limit: int = 20):
 # Gate with a simple shared secret in the X-Admin-Token header. Set ADMIN_TOKEN
 # in Render env vars. Useful for manually triggering an ingestion run during
 # the pilot before the daily cron has fired, or after fixing data.
+
+def _fire_admin_notification(subject: str, html: str, text: str = "") -> None:
+    """Schedule an admin notification email off-thread so the user's
+    HTTP response isn't held up by SMTP. Errors are swallowed inside
+    email_helper.notify_admin — this never raises.
+
+    Usage: from any async route, after a user-submitted insert succeeds,
+    call this and continue. The notification fires in the background
+    and the user gets their normal success response immediately.
+
+    Reads ADMIN_NOTIFY_EMAIL from env; no-ops if unset, so dev / unconfigured
+    deploys don't crash."""
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(asyncio.to_thread(_email_helper.notify_admin, subject, html, text))
+    except RuntimeError:
+        # No running event loop (sync context — unlikely in our FastAPI
+        # routes but defensive). Fall back to a direct blocking call.
+        _email_helper.notify_admin(subject, html, text)
+
 
 def _check_admin(request: Request, token_query: Optional[str]):
     """Validate the admin token from header OR ?token= query param.
