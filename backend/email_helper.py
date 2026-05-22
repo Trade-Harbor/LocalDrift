@@ -13,6 +13,9 @@ Env vars:
   FROM_EMAIL      Display From, e.g. "LocalDrift <hello@localdrift.app>"
                   If sending via Gmail SMTP, set up "Send mail as" in
                   Gmail settings so the From: header isn't rewritten.
+  ADMIN_NOTIFY_EMAIL  Optional. Recipient for admin-only notifications
+                  (new community-source submission, new report, new
+                  feedback). If unset, notify_admin is a no-op.
 
 For higher volume / better deliverability later, swap this module out
 for Resend or SendGrid — `send_email` is the only public surface.
@@ -81,4 +84,25 @@ def send_email(to: str, subject: str, html: str, text_fallback: str = "") -> boo
         return True
     except Exception as e:
         logger.error("send_email failed: to=%s err=%s", to, e)
+        return False
+
+
+def notify_admin(subject: str, html: str, text_fallback: str = "") -> bool:
+    """Fire-and-forget notification to the admin recipient. Used for
+    things like "a new community source was submitted" or "abuse
+    reported." Reads ADMIN_NOTIFY_EMAIL from env; no-ops if unset so
+    we never block a user's submission on missing config.
+
+    Always returns the result for tests/logging — callers should NOT
+    raise on a False return. Treat it like print() that may not print."""
+    recipient = os.environ.get("ADMIN_NOTIFY_EMAIL", "").strip()
+    if not recipient:
+        return False
+    try:
+        return send_email(recipient, subject, html, text_fallback=text_fallback)
+    except Exception as e:
+        # Defensive — send_email already swallows internal errors, but
+        # this protects callers from any unexpected exception in the
+        # path (DNS, env-var manipulation, etc.).
+        logger.error("notify_admin failed: subject=%s err=%s", subject, e)
         return False

@@ -35,6 +35,7 @@ import SearchResultsPage from "./pages/SearchResultsPage";
 import AdminDigestPage from "./pages/AdminDigestPage";
 import AdminReportsPage from "./pages/AdminReportsPage";
 import AdminCommunitySourcesPage from "./pages/AdminCommunitySourcesPage";
+import AdminRedditPostPage from "./pages/AdminRedditPostPage";
 import CommunitySourcesPage from "./pages/CommunitySourcesPage";
 import CommunitySourceSubmitPage from "./pages/CommunitySourceSubmitPage";
 import UnsubscribePage from "./pages/UnsubscribePage";
@@ -84,6 +85,7 @@ function AppRouter() {
               <Route path="/admin/digest" element={<AdminDigestPage />} />
               <Route path="/admin/reports" element={<AdminReportsPage />} />
               <Route path="/admin/community-sources" element={<AdminCommunitySourcesPage />} />
+              <Route path="/admin/reddit" element={<AdminRedditPostPage />} />
               <Route path="/community-sources" element={<CommunitySourcesPage />} />
               <Route path="/community-sources/submit" element={<CommunitySourceSubmitPage />} />
               <Route path="/unsubscribe" element={<UnsubscribePage />} />
