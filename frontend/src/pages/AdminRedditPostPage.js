@@ -42,6 +42,7 @@ export default function AdminRedditPostPage() {
   const token = params.get('token') || '';
 
   const [month, setMonth] = useState(defaultMonth());
+  const [includeTickets, setIncludeTickets] = useState(false);
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState(null);
   const [copiedStyle, setCopiedStyle] = useState(null);
@@ -51,7 +52,7 @@ export default function AdminRedditPostPage() {
     setLoading(true);
     try {
       const res = await axios.get(`${API_URL}/api/admin/reddit/preview-all`, {
-        params: { token, month },
+        params: { token, month, include_tickets: includeTickets },
       });
       setData(res.data);
     } catch (err) {
@@ -59,7 +60,7 @@ export default function AdminRedditPostPage() {
     } finally {
       setLoading(false);
     }
-  }, [token, month]);
+  }, [token, month, includeTickets]);
 
   useEffect(() => { fetchPreviews(); }, [fetchPreviews]);
 
@@ -109,7 +110,7 @@ export default function AdminRedditPostPage() {
       {/* Controls row */}
       <Card className="mb-6 dark:border-white/10">
         <CardContent className="p-4">
-          <div className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-wrap items-end gap-4">
             <div className="flex flex-col gap-1">
               <label className="text-xs font-medium text-muted-foreground flex items-center gap-1">
                 <Calendar className="h-3 w-3" /> Month
@@ -122,6 +123,24 @@ export default function AdminRedditPostPage() {
                 data-testid="reddit-month"
               />
             </div>
+
+            <label className="flex items-center gap-2 cursor-pointer pb-2">
+              <input
+                type="checkbox"
+                checked={includeTickets}
+                onChange={(e) => setIncludeTickets(e.target.checked)}
+                className="rounded h-4 w-4"
+                data-testid="include-tickets"
+              />
+              <span className="text-sm">
+                Include external ticket links
+                <span className="block text-xs text-muted-foreground">
+                  Adds "[tickets](Ticketmaster/SeatGeek)" to ticketed events. Off by default
+                  for the cleanest, least-promotional read.
+                </span>
+              </span>
+            </label>
+
             {data && (
               <div className="flex items-center gap-2 ml-auto">
                 <Badge variant="secondary">
