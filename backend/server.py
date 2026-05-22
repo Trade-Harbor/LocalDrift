@@ -2534,13 +2534,18 @@ async def admin_reddit_preview(
     token: Optional[str] = None,
     style: str = "weekly",
     month: Optional[str] = None,
+    include_tickets: bool = False,
 ):
     """Render one style + month combination. Returns markdown + counts.
     style ∈ {weekly, by_category, chronological}; month is YYYY-MM
-    (defaults to next month)."""
+    (defaults to next month). include_tickets adds an off-platform
+    "tickets" link to ticketed events — defaults False (Option A:
+    clean, no per-event links)."""
     _check_admin(request, token)
     try:
-        return await _reddit_runner.preview(db, style=style, month_key=month)
+        return await _reddit_runner.preview(
+            db, style=style, month_key=month, include_tickets=include_tickets,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -2550,12 +2555,15 @@ async def admin_reddit_preview_all(
     request: Request,
     token: Optional[str] = None,
     month: Optional[str] = None,
+    include_tickets: bool = False,
 ):
     """Render all three styles for the same month in one round trip.
     Used by the admin UI to show them side-by-side without three
     sequential calls."""
     _check_admin(request, token)
-    return await _reddit_runner.preview_all(db, month_key=month)
+    return await _reddit_runner.preview_all(
+        db, month_key=month, include_tickets=include_tickets,
+    )
 
 
 # Public unsubscribe endpoint (one-click, no auth — the email address

@@ -15,7 +15,10 @@ from .fetcher import fetch_month_events
 from .formatter import STYLES, default_month_key, render, month_title
 
 
-async def preview(db, style: str, month_key: str | None = None, site_url: str | None = None) -> dict:
+async def preview(
+    db, style: str, month_key: str | None = None, site_url: str | None = None,
+    *, include_tickets: bool = False,
+) -> dict:
     """Render the markdown for one style + month combination.
     Returns metadata + the body so the admin UI can show counts and a
     copy-to-clipboard button.
@@ -23,6 +26,9 @@ async def preview(db, style: str, month_key: str | None = None, site_url: str | 
     style ∈ {"weekly", "by_category", "chronological"}
     month_key defaults to the upcoming month.
     site_url defaults to PUBLIC_FRONTEND_URL or production root.
+    include_tickets — toggle the optional external "[tickets](url)"
+                      suffix on events that have an external_url. Off
+                      by default (Option A — clean, no per-event links).
     """
     if style not in STYLES:
         raise ValueError(f"Unknown style {style!r}. Valid: {sorted(STYLES.keys())}")
@@ -31,7 +37,7 @@ async def preview(db, style: str, month_key: str | None = None, site_url: str | 
     base = site_url or os.environ.get("PUBLIC_FRONTEND_URL", "https://www.localdrift.app").rstrip("/")
 
     events = await fetch_month_events(db, mk)
-    markdown = render(style, events, mk, base)
+    markdown = STYLES[style]["render"](events, mk, base, include_tickets=include_tickets)
 
     return {
         "style": style,
@@ -39,13 +45,17 @@ async def preview(db, style: str, month_key: str | None = None, site_url: str | 
         "month_key": mk,
         "month_label": month_title(mk),
         "event_count": len(events),
+        "include_tickets": include_tickets,
         "site_url": base,
         "title": f"What's happening in Wilmington — {month_title(mk)}",
         "markdown": markdown,
     }
 
 
-async def preview_all(db, month_key: str | None = None, site_url: str | None = None) -> dict:
+async def preview_all(
+    db, month_key: str | None = None, site_url: str | None = None,
+    *, include_tickets: bool = False,
+) -> dict:
     """Render all three styles for the same month in one call so the
     admin UI can show them side-by-side without round-tripping per style."""
     mk = month_key or default_month_key()
@@ -55,12 +65,13 @@ async def preview_all(db, month_key: str | None = None, site_url: str | None = N
         "month_key": mk,
         "month_label": month_title(mk),
         "event_count": len(events),
+        "include_tickets": include_tickets,
         "site_url": base,
         "title": f"What's happening in Wilmington — {month_title(mk)}",
         "styles": {
             key: {
                 "label": STYLES[key]["label"],
-                "markdown": render(key, events, mk, base),
+                "markdown": STYLES[key]["render"](events, mk, base, include_tickets=include_tickets),
             }
             for key in STYLES.keys()
         },
