@@ -2517,6 +2517,47 @@ async def admin_digest_runs(request: Request, token: Optional[str] = None, limit
     return await cursor.to_list(limit)
 
 
+# ============= REDDIT BOT PREVIEW =============
+# Phase D: dry-run only. Renders markdown for any combination of style +
+# month, with no Reddit API calls. Used by /admin/reddit to generate the
+# previews we paste into the r/Wilmington community-vote post.
+#
+# Live posting machinery (PRAW + cron + sticky state machine) lands in
+# a follow-up PR once the mods + community pick a winning format.
+
+import reddit_bot.runner as _reddit_runner
+
+
+@api_router.get("/admin/reddit/preview")
+async def admin_reddit_preview(
+    request: Request,
+    token: Optional[str] = None,
+    style: str = "weekly",
+    month: Optional[str] = None,
+):
+    """Render one style + month combination. Returns markdown + counts.
+    style ∈ {weekly, by_category, chronological}; month is YYYY-MM
+    (defaults to next month)."""
+    _check_admin(request, token)
+    try:
+        return await _reddit_runner.preview(db, style=style, month_key=month)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@api_router.get("/admin/reddit/preview-all")
+async def admin_reddit_preview_all(
+    request: Request,
+    token: Optional[str] = None,
+    month: Optional[str] = None,
+):
+    """Render all three styles for the same month in one round trip.
+    Used by the admin UI to show them side-by-side without three
+    sequential calls."""
+    _check_admin(request, token)
+    return await _reddit_runner.preview_all(db, month_key=month)
+
+
 # Public unsubscribe endpoint (one-click, no auth — the email address
 # itself is the token. Low-stakes: the worst an attacker can do is
 # unsubscribe someone else, which is reversible by re-signing up.)
