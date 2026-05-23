@@ -3571,6 +3571,117 @@ async def admin_data_counts(request: Request, token: Optional[str] = None):
     return out
 
 
+# ============= BULK EVENT IMPORT =============
+# Admin tool for getting many events into the DB at once without
+# clicking through /create-event N times. The expected workflow:
+# - Admin gathers event info from wherever (Instagram captions, venue
+#   websites, hand-typed notes)
+# - Admin (or Claude) shapes it into a JSON array
+# - Paste, submit, done.
+# Auth: admin token (no user-login required); attributes events to
+# "system_admin" rather than a real user_id so the import is traceable.
+
+
+class BulkEventItem(BaseModel):
+    """A single event in a bulk-import payload. Mirrors EventCreate but
+    loosens optional fields so admins don't have to pad lat/lng or
+    zip for every row."""
+    title: str
+    description: str = ""
+    category: str = "other"
+    start_date: datetime
+    end_date: Optional[datetime] = None
+    location_name: str = ""
+    address: str = ""
+    city: str = "Wilmington"
+    state: str = "NC"
+    zip_code: str = ""
+    latitude: float = 34.2257
+    longitude: float = -77.9447
+    image_url: Optional[str] = None
+    external_url: Optional[str] = None  # link out to original source if applicable
+    tags: List[str] = []
+    mood_tags: List[str] = []
+    source: Optional[str] = None  # e.g. "manual", "instagram", "venue_website"
+    organizer_name: Optional[str] = None  # for events where the venue/org is the organizer
+
+
+class BulkEventRequest(BaseModel):
+    events: List[BulkEventItem]
+    dry_run: bool = False  # if True, validate + count but don't write
+
+
+@api_router.post("/admin/events/bulk")
+async def admin_bulk_events(
+    body: BulkEventRequest,
+    request: Request,
+    token: Optional[str] = None,
+):
+    """Bulk-create events from a JSON array. Returns counts + any
+    per-row errors so the admin UI can show what succeeded and what
+    needs fixing."""
+    _check_admin(request, token)
+
+    if not body.events:
+        raise HTTPException(status_code=400, detail="events array is required and non-empty")
+
+    inserted: list[str] = []
+    skipped: list[dict] = []
+
+    for idx, item in enumerate(body.events):
+        try:
+            event_id = f"event_{uuid.uuid4().hex[:12]}"
+            doc = {
+                "event_id": event_id,
+                "title": item.title,
+                "description": item.description or "",
+                "category": item.category,
+                "start_date": item.start_date.isoformat(),
+                "end_date": item.end_date.isoformat() if item.end_date else None,
+                "location_name": item.location_name or "",
+                "address": item.address or "",
+                "city": item.city or "Wilmington",
+                "state": item.state or "NC",
+                "zip_code": item.zip_code or "",
+                "latitude": item.latitude,
+                "longitude": item.longitude,
+                "image_url": item.image_url,
+                "external_url": item.external_url,
+                "is_paid": False,
+                "ticket_price": None,
+                "discount_percentage": None,
+                "discounted_price": None,
+                "total_tickets": None,
+                "tickets_sold": 0,
+                "is_promoted": False,
+                "promotion_expires": None,
+                "tags": item.tags or [],
+                "mood_tags": item.mood_tags or [],
+                "organizer_id": "system_admin",
+                "organizer_name": item.organizer_name or "Local",
+                "organizer_type": "external",
+                "source": item.source or "manual",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "_bulk_import": True,
+            }
+            if body.dry_run:
+                inserted.append(event_id)
+                continue
+            await db.events.insert_one(doc)
+            inserted.append(event_id)
+        except Exception as e:
+            skipped.append({"index": idx, "title": item.title, "error": str(e)})
+
+    return {
+        "dry_run": body.dry_run,
+        "attempted": len(body.events),
+        "inserted": len(inserted),
+        "skipped": len(skipped),
+        "errors": skipped,
+        "inserted_ids": inserted if body.dry_run else inserted[:50],
+    }
+
+
 @api_router.post("/admin/run-attractions")
 async def admin_run_attractions(request: Request, token: Optional[str] = None):
     """Re-run JUST the attractions ingester. Useful when OSM Overpass was
