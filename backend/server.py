@@ -3386,6 +3386,56 @@ async def admin_delete_community_source(
     return {"deleted": True, "source_id": source_id}
 
 
+@api_router.delete("/admin/events/{event_id}")
+async def admin_force_delete_event(
+    event_id: str,
+    request: Request,
+    token: Optional[str] = None,
+):
+    """Admin: force-delete any event regardless of organizer. Cascades
+    to comments and reports filed against the event so we don't leave
+    orphans in the moderation queue.
+
+    Tickets are intentionally NOT deleted — they carry payment history
+    that needs to survive a moderation action for accounting. They're
+    flagged as `event_deleted=True` so the my-tickets page can render
+    them as "this event was removed" without crashing on the missing
+    parent."""
+    _check_admin(request, token)
+
+    existing = await db.events.find_one(
+        {"event_id": event_id},
+        {"_id": 0, "title": 1, "organizer_id": 1, "source": 1},
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    await db.events.delete_one({"event_id": event_id})
+    # Comments collection stores event comments with target_type="event".
+    deleted_comments = await db.comments.delete_many(
+        {"target_id": event_id, "target_type": "event"}
+    )
+    deleted_reports = await db.reports.delete_many(
+        {"target_type": "event", "target_id": event_id}
+    )
+    # Flag any tickets so the user can still see them in their dashboard.
+    flagged_tickets = await db.tickets.update_many(
+        {"event_id": event_id},
+        {"$set": {"event_deleted": True, "event_deleted_at": datetime.now(timezone.utc).isoformat()}},
+    )
+
+    return {
+        "deleted": True,
+        "event_id": event_id,
+        "title": existing.get("title"),
+        "cascade": {
+            "comments_removed": deleted_comments.deleted_count,
+            "reports_removed": deleted_reports.deleted_count,
+            "tickets_flagged": flagged_tickets.modified_count,
+        },
+    }
+
+
 # ============= LOCAL NEWS =============
 
 @api_router.get("/news")
