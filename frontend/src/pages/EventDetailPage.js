@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import axios from 'axios';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -31,6 +31,12 @@ const API_URL = process.env.REACT_APP_BACKEND_URL;
 export default function EventDetailPage() {
   const { eventId } = useParams();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  // Admin override token from URL — when present, an "Admin: force-delete"
+  // button appears for any event regardless of organizer. Used for moderation
+  // and for cleaning up bulk-imported events that have organizer_id="system_admin"
+  // and therefore can't be deleted via the normal organizer flow.
+  const adminToken = searchParams.get('admin_token') || '';
   const { user, isAuthenticated, token } = useAuth();
   const { location } = useLocationContext();
   
@@ -84,6 +90,30 @@ export default function EventDetailPage() {
       toast.error(error.response?.data?.detail || 'Failed to start promotion checkout');
     } finally {
       setPromoting(false);
+    }
+  };
+
+  const handleAdminForceDelete = async () => {
+    const title = event?.title || 'this event';
+    const ok = window.confirm(
+      `Force-delete "${title}"?\n\nThis bypasses the organizer check and cannot be undone. ` +
+      `Comments and reports tied to this event will also be removed.`
+    );
+    if (!ok) return;
+    try {
+      const res = await axios.delete(`${API_URL}/api/admin/events/${eventId}`, {
+        params: { token: adminToken },
+      });
+      const cascade = res.data?.cascade || {};
+      const cascadeMsg = [
+        cascade.comments_removed ? `${cascade.comments_removed} comments` : null,
+        cascade.reports_removed ? `${cascade.reports_removed} reports` : null,
+        cascade.tickets_flagged ? `${cascade.tickets_flagged} tickets flagged` : null,
+      ].filter(Boolean).join(', ');
+      toast.success(cascadeMsg ? `Event deleted (${cascadeMsg})` : 'Event deleted');
+      navigate('/events');
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Admin delete failed');
     }
   };
 
@@ -561,6 +591,33 @@ export default function EventDetailPage() {
                 >
                   <Pencil className="h-4 w-4 mr-2" />
                   Edit event
+                </Button>
+              </div>
+            )}
+
+            {/* Admin force-delete block. Only renders when ?admin_token=
+                is in the URL — the token is validated server-side on
+                submit; if it's wrong the API call 401s and nothing
+                happens. Visually distinct from the organizer Edit/Delete
+                so it's clear this is a moderation action, not a self-
+                service one. */}
+            {adminToken && (
+              <div className="mt-4 bg-card rounded-2xl p-4 shadow-lg dark:border dark:border-red-500/30 border-red-200/50" data-testid="admin-controls">
+                <p className="text-xs uppercase tracking-wide text-red-600 dark:text-red-400 mb-2">
+                  Admin override
+                </p>
+                <p className="text-xs text-muted-foreground mb-3">
+                  Force-deletes this event regardless of organizer. Used for moderation
+                  and to clean up bulk-imported events. Comments + reports also removed;
+                  tickets flagged.
+                </p>
+                <Button
+                  variant="outline"
+                  className="w-full rounded-full border-red-300 text-red-600 hover:bg-red-50 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-950/30"
+                  onClick={handleAdminForceDelete}
+                  data-testid="admin-force-delete-btn"
+                >
+                  Force-delete event
                 </Button>
               </div>
             )}
