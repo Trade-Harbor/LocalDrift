@@ -29,7 +29,13 @@ _MD_ESCAPE = re.compile(r"([\\`*_{}\[\]()#+\-!>~|])")
 
 # Per-section soft cap. More than this and the section gets a "see all on
 # LocalDrift" trailer instead of a wall of text.
-SECTION_CAP_DEFAULT = 12
+#
+# This used to be 12 (sized for a single week in the weekly view). For the
+# monthly category view a single category can easily have 30-40 events
+# (Wilmington has a busy concert scene), so 12 was clipping more than half
+# of "Concerts." 50 gives breathing room while still trapping pathological
+# cases (e.g., bad data flood) before they hit Reddit's post-length limit.
+SECTION_CAP_DEFAULT = 50
 
 # Category display labels. Keys MUST match backend EventCreate.category values.
 CATEGORY_LABEL = {
@@ -111,6 +117,10 @@ def format_event_line(event: dict, *, bullet: bool = True, include_tickets: bool
     Reads like community content rather than an ad, and keeps the post's
     total markdown-link count low so Reddit's spam filter doesn't flag.
 
+    Synthetic recurring events (emitted by _collapse_recurring with the
+    "_is_recurring" flag) are rendered differently — one line covering
+    all the dates rather than N separate lines for N repeats.
+
     bullet           — prefix with "* " for use inside bulleted lists
     include_tickets  — append "— [tickets](external_url)" when the event has
                        one (Ticketmaster, SeatGeek, etc.). Off-platform link,
@@ -119,14 +129,29 @@ def format_event_line(event: dict, *, bullet: bool = True, include_tickets: bool
                        to True if the r/Wilmington mods/community decide they
                        want direct purchase links.
     """
+    title = escape_md(event.get("title") or "Untitled event")
+    venue = escape_md(event.get("location_name") or event.get("city") or "")
+
+    if event.get("_is_recurring"):
+        dates = event.get("_recurring_dates") or []
+        if not dates:
+            return ""
+        first = dates[0]
+        day_name = first.strftime("%A")
+        time_str = first.strftime("%I:%M %p").lstrip("0") + " ET"
+        date_list = ", ".join(d.strftime("%b %d").replace(" 0", " ") for d in dates)
+        line = f"**Every {day_name} ({date_list}) · {time_str}** — {title}"
+        if venue:
+            line += f" at {venue}"
+        if include_tickets and event.get("external_url"):
+            line += f" — [tickets]({event['external_url']})"
+        return f"* {line}" if bullet else line
+
     dt = _parse_event_dt(event.get("start_date"))
     if dt is None:
         return ""
     local = _local(dt)
     when = local.strftime("%a %b %d") + " · " + local.strftime("%I:%M %p").lstrip("0") + " ET"
-    title = escape_md(event.get("title") or "Untitled event")
-    venue = escape_md(event.get("location_name") or event.get("city") or "")
-
     line = f"**{when}** — {title}"
     if venue:
         line += f" at {venue}"
@@ -135,11 +160,95 @@ def format_event_line(event: dict, *, bullet: bool = True, include_tickets: bool
     return f"* {line}" if bullet else line
 
 
+def _collapse_recurring(events: list[dict]) -> list[dict]:
+    """Group identical-title-and-venue events that repeat on the same
+    day-of-week + same time-of-day into a single synthetic "recurring"
+    event. Solves the "5 Turtle Talks back to back" wall-of-text problem
+    when listing a full month.
+
+    Detection rules:
+      - same title (after stripping whitespace)
+      - same location_name
+      - same weekday for every occurrence
+      - same hour:minute for every occurrence (within +/- 1 minute slack)
+
+    If those all hold, the group collapses to one synthetic event with
+    a "_is_recurring=True" flag and "_recurring_dates=[datetime,...]"
+    attached. The renderer in format_event_line handles the synthetic
+    case. Otherwise the group is returned unchanged (events that share
+    a title but happen on different days stay as separate lines).
+
+    Sort order of the output preserves chronological order based on each
+    group's earliest date — keeps weekly groupings + chronological view
+    sensible after collapse.
+    """
+    from collections import defaultdict
+
+    groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for ev in events:
+        key = ((ev.get("title") or "").strip(), (ev.get("location_name") or "").strip())
+        groups[key].append(ev)
+
+    out: list[dict] = []
+    for (title, venue), group in groups.items():
+        if len(group) < 2:
+            out.extend(group)
+            continue
+
+        # Pull local datetimes for every member of the group
+        local_dts = []
+        for ev in group:
+            dt = _parse_event_dt(ev.get("start_date"))
+            if dt is None:
+                local_dts = None
+                break
+            local_dts.append(_local(dt))
+        if local_dts is None or len(local_dts) < 2:
+            out.extend(group)
+            continue
+
+        first = local_dts[0]
+        same_pattern = all(
+            d.weekday() == first.weekday()
+            and d.hour == first.hour
+            and abs(d.minute - first.minute) <= 1
+            for d in local_dts
+        )
+
+        if not same_pattern:
+            out.extend(group)
+            continue
+
+        # Build the synthetic event. Base on the first occurrence so all
+        # the venue/category/tags survive untouched; just override the
+        # recurring metadata.
+        sorted_dts = sorted(local_dts)
+        synthetic = dict(group[0])
+        synthetic["_is_recurring"] = True
+        synthetic["_recurring_dates"] = sorted_dts
+        # Anchor start_date to the first occurrence so any downstream
+        # sort / chronological grouping uses the right anchor.
+        synthetic["start_date"] = sorted_dts[0].astimezone(timezone.utc).isoformat()
+        out.append(synthetic)
+
+    # Stable chronological re-sort so collapsed entries land in the right
+    # spot (anchored to first occurrence).
+    out.sort(
+        key=lambda e: _parse_event_dt(e.get("start_date")) or datetime.max.replace(tzinfo=timezone.utc)
+    )
+    return out
+
+
 # ---------- Grouping helpers ----------
 
 def group_by_week(events: list[dict]) -> list[tuple[str, list[dict]]]:
     """Return [(week_label, events), ...] in chronological order.
-    Weeks are defined Monday-Sunday in ET (matches the Wilmington reader's mental model)."""
+    Weeks are defined Monday-Sunday in ET (matches the Wilmington reader's mental model).
+
+    Note: recurring-collapse is NOT applied at the week level — a series
+    that spans multiple weeks (e.g., Turtle Talks every Monday) should
+    appear once per week, not collapsed across all weeks. The chronological
+    + by-category views collapse at the top level instead."""
     buckets: dict[datetime, list[dict]] = {}
     for ev in events:
         dt = _parse_event_dt(ev.get("start_date"))
@@ -159,7 +268,10 @@ def group_by_week(events: list[dict]) -> list[tuple[str, list[dict]]]:
 
 
 def group_by_category(events: list[dict]) -> list[tuple[str, list[dict]]]:
-    """Return [(category_label, events), ...] in a stable display order."""
+    """Return [(category_label, events), ...] in a stable display order.
+
+    Applies _collapse_recurring within each category so a weekly Turtle
+    Talks series shows as one line instead of five."""
     buckets: dict[str, list[dict]] = {}
     for ev in events:
         cat = (ev.get("category") or "other").lower()
@@ -169,8 +281,8 @@ def group_by_category(events: list[dict]) -> list[tuple[str, list[dict]]]:
     out = []
     for cat in CATEGORY_ORDER:
         if cat in buckets:
-            bucket = sorted(buckets[cat], key=lambda e: _parse_event_dt(e.get("start_date")) or datetime.max.replace(tzinfo=timezone.utc))
-            out.append((CATEGORY_LABEL[cat], bucket))
+            collapsed = _collapse_recurring(buckets[cat])
+            out.append((CATEGORY_LABEL[cat], collapsed))
     return out
 
 
@@ -260,7 +372,7 @@ def build_by_category(
 
 def build_chronological(
     events: list[dict], month_key: str, site_url: str,
-    cap: int = 60, *, include_tickets: bool = False,
+    cap: int = 100, *, include_tickets: bool = False,
 ) -> str:
     """Style 3: one long chronological list of every event in the month. No sections."""
     intro = (
@@ -268,8 +380,9 @@ def build_chronological(
         "No filters, no grouping — just date order, top to bottom. Skim it like a calendar."
     )
     out = _header(month_key, intro)
+    collapsed = _collapse_recurring(events)
     sorted_events = sorted(
-        events,
+        collapsed,
         key=lambda e: _parse_event_dt(e.get("start_date")) or datetime.max.replace(tzinfo=timezone.utc),
     )
     shown = sorted_events[:cap]

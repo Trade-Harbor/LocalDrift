@@ -3630,13 +3630,38 @@ async def admin_bulk_events(
 
     for idx, item in enumerate(body.events):
         try:
+            # Duplicate detection — same title + start_date within 12h +
+            # coordinates within ~0.005 deg. Means re-running the same
+            # JSON payload is safe and won't double-insert.
+            start_iso = item.start_date.isoformat()
+            window_low = (item.start_date - timedelta(hours=12)).isoformat()
+            window_high = (item.start_date + timedelta(hours=12)).isoformat()
+            dup_lat = item.latitude or 0
+            dup_lng = item.longitude or 0
+            existing = await db.events.find_one(
+                {
+                    "title": item.title.strip(),
+                    "start_date": {"$gte": window_low, "$lte": window_high},
+                    "latitude": {"$gte": dup_lat - 0.005, "$lte": dup_lat + 0.005},
+                    "longitude": {"$gte": dup_lng - 0.005, "$lte": dup_lng + 0.005},
+                },
+                {"_id": 0, "event_id": 1},
+            )
+            if existing:
+                skipped.append({
+                    "index": idx,
+                    "title": item.title,
+                    "error": f"Duplicate of existing event {existing.get('event_id')}",
+                })
+                continue
+
             event_id = f"event_{uuid.uuid4().hex[:12]}"
             doc = {
                 "event_id": event_id,
                 "title": item.title,
                 "description": item.description or "",
                 "category": item.category,
-                "start_date": item.start_date.isoformat(),
+                "start_date": start_iso,
                 "end_date": item.end_date.isoformat() if item.end_date else None,
                 "location_name": item.location_name or "",
                 "address": item.address or "",
