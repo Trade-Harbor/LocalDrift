@@ -11,19 +11,21 @@ import {
   DropdownMenuTrigger,
 } from '../components/ui/dropdown-menu';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
-import { 
-  MapPin, 
-  Sun, 
-  Moon, 
-  Menu, 
-  X, 
-  User, 
-  LogOut, 
-  Calendar, 
+import {
+  MapPin,
+  Sun,
+  Moon,
+  Menu,
+  X,
+  User,
+  LogOut,
+  Calendar,
   Ticket,
   LayoutDashboard,
   Truck,
-  Plus
+  Plus,
+  Instagram,
+  Facebook
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { FeedbackButton } from './FeedbackButton';
@@ -385,9 +387,36 @@ export const Footer = () => {
               />
               <span className="font-heading font-bold text-lg">LocalDrift</span>
             </Link>
-            <p className="text-sm text-muted-foreground">
+            <p className="text-sm text-muted-foreground mb-4">
               Discover what's happening in your community. Events, food trucks, and local experiences.
             </p>
+            {/* Social links. Lives in the brand column so the visual
+                identity (logo, name, tagline, socials) groups together.
+                Icons sized to match the body text rhythm; hover lifts
+                from muted-foreground to primary for the standard
+                "this is interactive" affordance. */}
+            <div className="flex items-center gap-3" aria-label="LocalDrift on social media">
+              <a
+                href="https://www.instagram.com/localdrift.app/"
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="LocalDrift on Instagram"
+                className="text-muted-foreground hover:text-primary transition-colors"
+                data-testid="footer-instagram"
+              >
+                <Instagram className="h-5 w-5" />
+              </a>
+              <a
+                href="https://www.facebook.com/profile.php?id=61590000928752"
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="LocalDrift on Facebook"
+                className="text-muted-foreground hover:text-primary transition-colors"
+                data-testid="footer-facebook"
+              >
+                <Facebook className="h-5 w-5" />
+              </a>
+            </div>
           </div>
           
           <div>
