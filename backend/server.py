@@ -3654,11 +3654,23 @@ class BulkEventItem(BaseModel):
     mood_tags: List[str] = []
     source: Optional[str] = None  # e.g. "manual", "instagram", "venue_website"
     organizer_name: Optional[str] = None  # for events where the venue/org is the organizer
+    # Ticketing — defaults preserve the "everything free" behavior of the
+    # original schema, but bulk imports can now correctly flag paid events
+    # without needing a follow-up edit pass.
+    is_paid: bool = False
+    ticket_price: Optional[float] = None
 
 
 class BulkEventRequest(BaseModel):
     events: List[BulkEventItem]
     dry_run: bool = False  # if True, validate + count but don't write
+    # When True, duplicate-matched events get a partial UPDATE of their
+    # mutable fields (category, description, paid flag, ticket info,
+    # tags, etc.) instead of being skipped. Lets the operator re-paste
+    # a corrected JSON to fix bad data at scale. Identity fields (title,
+    # start_date, location, organizer) are NEVER updated — those are
+    # part of the dedup key.
+    update_duplicates: bool = False
 
 
 @api_router.post("/admin/events/bulk")
@@ -3676,6 +3688,7 @@ async def admin_bulk_events(
         raise HTTPException(status_code=400, detail="events array is required and non-empty")
 
     inserted: list[str] = []
+    updated: list[str] = []
     skipped: list[dict] = []
 
     for idx, item in enumerate(body.events):
@@ -3698,11 +3711,45 @@ async def admin_bulk_events(
                 {"_id": 0, "event_id": 1},
             )
             if existing:
-                skipped.append({
-                    "index": idx,
-                    "title": item.title,
-                    "error": f"Duplicate of existing event {existing.get('event_id')}",
-                })
+                if not body.update_duplicates:
+                    skipped.append({
+                        "index": idx,
+                        "title": item.title,
+                        "error": f"Duplicate of existing event {existing.get('event_id')} (enable 'update duplicates' to overwrite)",
+                    })
+                    continue
+
+                # Force-update path. Touch only the mutable fields — never
+                # rewrite the identity fields (title/start_date/location)
+                # since those are part of how we matched in the first place.
+                # Also leave organizer_id and created_at alone so audit
+                # trail is preserved.
+                updates = {
+                    "description": item.description or "",
+                    "category": item.category,
+                    "end_date": item.end_date.isoformat() if item.end_date else None,
+                    "location_name": item.location_name or "",
+                    "address": item.address or "",
+                    "city": item.city or "Wilmington",
+                    "state": item.state or "NC",
+                    "zip_code": item.zip_code or "",
+                    "image_url": item.image_url,
+                    "external_url": item.external_url,
+                    "is_paid": item.is_paid,
+                    "ticket_price": item.ticket_price,
+                    "tags": item.tags or [],
+                    "mood_tags": item.mood_tags or [],
+                    "source": item.source or "manual",
+                    "organizer_name": item.organizer_name or "Local",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "_bulk_updated": True,
+                }
+                if not body.dry_run:
+                    await db.events.update_one(
+                        {"event_id": existing["event_id"]},
+                        {"$set": updates},
+                    )
+                updated.append(existing["event_id"])
                 continue
 
             event_id = f"event_{uuid.uuid4().hex[:12]}"
@@ -3722,8 +3769,8 @@ async def admin_bulk_events(
                 "longitude": item.longitude,
                 "image_url": item.image_url,
                 "external_url": item.external_url,
-                "is_paid": False,
-                "ticket_price": None,
+                "is_paid": item.is_paid,
+                "ticket_price": item.ticket_price,
                 "discount_percentage": None,
                 "discounted_price": None,
                 "total_tickets": None,
@@ -3749,11 +3796,14 @@ async def admin_bulk_events(
 
     return {
         "dry_run": body.dry_run,
+        "update_duplicates": body.update_duplicates,
         "attempted": len(body.events),
         "inserted": len(inserted),
+        "updated": len(updated),
         "skipped": len(skipped),
         "errors": skipped,
         "inserted_ids": inserted if body.dry_run else inserted[:50],
+        "updated_ids": updated[:50],
     }
 
 
