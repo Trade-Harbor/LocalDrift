@@ -64,6 +64,10 @@ export default function AdminBulkEventsPage() {
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
   const [parseError, setParseError] = useState('');
+  // When on, duplicates get a partial UPDATE (paid/category/description/etc.)
+  // instead of being skipped. Off by default so accidental re-pastes don't
+  // mass-overwrite live data unexpectedly.
+  const [updateDuplicates, setUpdateDuplicates] = useState(false);
 
   if (!token) {
     return (
@@ -104,12 +108,16 @@ export default function AdminBulkEventsPage() {
     try {
       const res = await axios.post(
         `${API_URL}/api/admin/events/bulk`,
-        { events, dry_run: dryRun },
+        { events, dry_run: dryRun, update_duplicates: updateDuplicates },
         { params: { token } },
       );
       setResult(res.data);
       const verb = dryRun ? 'Validated' : 'Imported';
-      toast.success(`${verb} ${res.data.inserted} of ${res.data.attempted} events`);
+      const parts = [
+        res.data.inserted ? `${res.data.inserted} new` : null,
+        res.data.updated ? `${res.data.updated} updated` : null,
+      ].filter(Boolean).join(', ') || '0';
+      toast.success(`${verb} ${parts} of ${res.data.attempted} events`);
     } catch (err) {
       const detail = err.response?.data?.detail;
       const msg = typeof detail === 'string' ? detail : detail?.[0]?.msg || 'Bulk import failed';
@@ -166,6 +174,25 @@ export default function AdminBulkEventsPage() {
             </p>
           )}
 
+          <label className="flex items-start gap-2 cursor-pointer pt-2">
+            <input
+              type="checkbox"
+              checked={updateDuplicates}
+              onChange={(e) => setUpdateDuplicates(e.target.checked)}
+              className="rounded h-4 w-4 mt-0.5"
+              data-testid="update-duplicates-toggle"
+            />
+            <span className="text-sm">
+              Update duplicates (overwrite existing records)
+              <span className="block text-xs text-muted-foreground">
+                When on: events that match an existing one by title + start time + location
+                get their <strong>mutable fields</strong> overwritten (category, description,
+                is_paid, ticket_price, tags, etc.). Identity fields stay locked.
+                Off by default so accidental re-pastes don't mass-mutate live data.
+              </span>
+            </span>
+          </label>
+
           <div className="flex flex-wrap gap-2 justify-end">
             <Button
               type="button"
@@ -184,7 +211,7 @@ export default function AdminBulkEventsPage() {
               data-testid="bulk-import"
             >
               {submitting ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Send className="h-4 w-4 mr-1" />}
-              Import all
+              {updateDuplicates ? 'Import / update all' : 'Import all'}
             </Button>
           </div>
         </CardContent>
@@ -201,12 +228,19 @@ export default function AdminBulkEventsPage() {
                 <Badge className="bg-emerald-500">Imported</Badge>
               )}
               <Badge variant="secondary">{result.attempted} attempted</Badge>
-              <Badge className="bg-emerald-500/80">
-                <CheckCircle2 className="h-3 w-3 mr-1" /> {result.inserted} ok
-              </Badge>
+              {result.inserted > 0 && (
+                <Badge className="bg-emerald-500/80">
+                  <CheckCircle2 className="h-3 w-3 mr-1" /> {result.inserted} new
+                </Badge>
+              )}
+              {result.updated > 0 && (
+                <Badge className="bg-blue-500/80">
+                  <CheckCircle2 className="h-3 w-3 mr-1" /> {result.updated} updated
+                </Badge>
+              )}
               {result.skipped > 0 && (
                 <Badge variant="destructive">
-                  <AlertCircle className="h-3 w-3 mr-1" /> {result.skipped} failed
+                  <AlertCircle className="h-3 w-3 mr-1" /> {result.skipped} skipped
                 </Badge>
               )}
             </div>
