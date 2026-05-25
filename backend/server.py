@@ -694,8 +694,28 @@ async def get_events(
             {"promotion_expires": None, "is_promoted": True}
         ]
     
-    # Only show upcoming or ongoing events
-    query["start_date"] = {"$gte": (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()}
+    # Only show upcoming or actively-ongoing events.
+    # The previous logic was `start_date >= now - 24h`, which kept
+    # yesterday's events visible for a full day after they began. That
+    # caused user-reported "past events showing up" confusion. Replaced
+    # with: show events that EITHER haven't started yet OR have a
+    # known end_date in the future (still happening).
+    # Composed via $and so it doesn't clobber any $or from search or
+    # promoted_only above (or the literal start_date filter from the
+    # date-range param).
+    now_iso = datetime.now(timezone.utc).isoformat()
+    temporal_filter = {
+        "$or": [
+            # Has an end_date in the future → ongoing
+            {"end_date": {"$gte": now_iso}},
+            # No end_date AND start hasn't happened yet → upcoming
+            {"$and": [
+                {"start_date": {"$gte": now_iso}},
+                {"$or": [{"end_date": None}, {"end_date": {"$exists": False}}]},
+            ]},
+        ]
+    }
+    query.setdefault("$and", []).append(temporal_filter)
 
     # Hide auto-moderated events (flagged by N distinct users until admin review)
     query["is_hidden"] = {"$ne": True}
@@ -2733,8 +2753,23 @@ async def unified_search(
             {"attraction_type": {"$in": ATTR_GROUPS[group_name]}},
         ]}
 
+    # For events, intersect the text filter with the same upcoming/
+    # ongoing temporal filter the events-list endpoint uses, so search
+    # results never surface concerts/markets that already happened.
+    now_iso = datetime.now(timezone.utc).isoformat()
+    events_temporal = {
+        "$or": [
+            {"end_date": {"$gte": now_iso}},
+            {"$and": [
+                {"start_date": {"$gte": now_iso}},
+                {"$or": [{"end_date": None}, {"end_date": {"$exists": False}}]},
+            ]},
+        ]
+    }
+    events_filter = {"$and": [text_filters["events"], events_temporal]}
+
     # Run queries in parallel — 5 base + 3 split attraction buckets
-    events_t = db.events.find(text_filters["events"], {"_id": 0}).limit(limit_per_type).to_list(limit_per_type)
+    events_t = db.events.find(events_filter, {"_id": 0}).limit(limit_per_type).to_list(limit_per_type)
     rests_t = db.restaurants.find(text_filters["restaurants"], {"_id": 0}).limit(limit_per_type).to_list(limit_per_type)
     outdoor_t = db.attractions.find(attr_filter_for("outdoor"), {"_id": 0}).limit(limit_per_type).to_list(limit_per_type)
     fitness_t = db.attractions.find(attr_filter_for("fitness"), {"_id": 0}).limit(limit_per_type).to_list(limit_per_type)
