@@ -2586,6 +2586,48 @@ async def admin_reddit_preview_all(
     )
 
 
+# ============= INSTAGRAM CAROUSEL =============
+# Weekly events carousel generator. Renders 1080x1080 PNG slides with
+# LocalDrift branding, packages them into a ZIP for upload to IG.
+# Mirrors the Reddit-bot preview pattern: pure dry-run, no live posting.
+
+import instagram.runner as _instagram_runner
+
+
+@api_router.get("/admin/instagram/preview")
+async def admin_instagram_preview(
+    request: Request,
+    token: Optional[str] = None,
+    week_start: Optional[str] = None,
+):
+    """Render the carousel and return base64-encoded JPEG thumbnails for
+    each slide. Used by the admin UI for visual review before download.
+
+    week_start (optional): YYYY-MM-DD anchor for the Monday of the
+    target week. Defaults to the upcoming Monday in Eastern Time."""
+    _check_admin(request, token)
+    return await _instagram_runner.preview(db, week_start=week_start)
+
+
+@api_router.get("/admin/instagram/download")
+async def admin_instagram_download(
+    request: Request,
+    token: Optional[str] = None,
+    week_start: Optional[str] = None,
+):
+    """Return the full-resolution carousel as a ZIP of PNGs. Filename
+    encodes the week so successive downloads don't overwrite each
+    other in the user's downloads folder."""
+    from fastapi.responses import Response
+    _check_admin(request, token)
+    data, filename = await _instagram_runner.zip_bytes(db, week_start=week_start)
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # Public unsubscribe endpoint (one-click, no auth — the email address
 # itself is the token. Low-stakes: the worst an attacker can do is
 # unsubscribe someone else, which is reversible by re-signing up.)
