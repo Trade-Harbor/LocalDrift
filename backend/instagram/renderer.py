@@ -229,18 +229,42 @@ def week_window(start_date: datetime | None = None) -> tuple[datetime, datetime]
     return monday_local.astimezone(timezone.utc), sunday_local.astimezone(timezone.utc)
 
 
-def week_label(monday_utc: datetime, sunday_utc: datetime) -> str:
-    m = monday_utc.astimezone(ET)
-    s = sunday_utc.astimezone(ET)
-    if m.month == s.month:
-        return f"{m.strftime('%b %d').replace(' 0', ' ')} – {s.strftime('%d')}"
-    return f"{m.strftime('%b %d').replace(' 0', ' ')} – {s.strftime('%b %d').replace(' 0', ' ')}"
+def weekend_window(start_date: datetime | None = None) -> tuple[datetime, datetime]:
+    """Return Friday 00:00 ET through Sunday 23:59 ET, as UTC datetimes.
+    If start_date is None, returns the upcoming Fri-Sun. If today IS Friday,
+    uses today (so a Friday-morning post still covers tonight)."""
+    now = (start_date or datetime.now(timezone.utc)).astimezone(ET)
+    # Weekday: Mon=0, Fri=4. Days until Friday.
+    days_to_friday = (4 - now.weekday()) % 7
+    friday_local = (now + timedelta(days=days_to_friday)).replace(hour=0, minute=0, second=0, microsecond=0)
+    sunday_local = friday_local + timedelta(days=2, hours=23, minutes=59, seconds=59)
+    return friday_local.astimezone(timezone.utc), sunday_local.astimezone(timezone.utc)
+
+
+def range_label(start_utc: datetime, end_utc: datetime) -> str:
+    """Format a date range as "Jun 8 – 14" (same month) or "Jun 30 – Jul 6"
+    (cross-month). Works for both Mon-Sun weeks and Fri-Sun weekends."""
+    s = start_utc.astimezone(ET)
+    e = end_utc.astimezone(ET)
+    if s.month == e.month:
+        return f"{s.strftime('%b %d').replace(' 0', ' ')} – {e.strftime('%d')}"
+    return f"{s.strftime('%b %d').replace(' 0', ' ')} – {e.strftime('%b %d').replace(' 0', ' ')}"
+
+
+# Backward-compat alias — older callers (Reddit bot, tests) may import week_label.
+# Same implementation, just renamed for clarity now that weekends share it.
+week_label = range_label
 
 
 # ---------- Slide builders ----------
 
-def build_cover(monday_utc: datetime, sunday_utc: datetime) -> Image.Image:
-    """First slide: brand + headline + week range + swipe prompt."""
+def build_cover(
+    start_utc: datetime, end_utc: datetime, *, period_label: str = "this week"
+) -> Image.Image:
+    """First slide: brand + headline + range label + swipe prompt.
+
+    period_label drives the sub-headline ("this week" or "this weekend").
+    The range below it shows the actual date span from start_utc to end_utc."""
     img = Image.new("RGB", SLIDE_SIZE, BG_TEAL)
     draw = ImageDraw.Draw(img)
 
@@ -260,9 +284,9 @@ def build_cover(monday_utc: datetime, sunday_utc: datetime) -> Image.Image:
     y += 110
     _draw_text_centered(draw, "IN WILMINGTON", headline_font, y)
     y += 130
-    _draw_text_centered(draw, "this week", sub_font, y, fill=TEXT_DIM)
+    _draw_text_centered(draw, period_label, sub_font, y, fill=TEXT_DIM)
     y += 80
-    label = week_label(monday_utc, sunday_utc).upper()
+    label = range_label(start_utc, end_utc).upper()
     _draw_text_centered(draw, label, week_font, y, fill=ACCENT_GOLD)
 
     # Swipe prompt
@@ -398,12 +422,21 @@ def build_cta() -> Image.Image:
     return img
 
 
-def build_carousel(events: list[dict], monday_utc: datetime, sunday_utc: datetime) -> list[Image.Image]:
+def build_carousel(
+    events: list[dict],
+    start_utc: datetime,
+    end_utc: datetime,
+    *,
+    period_label: str = "this week",
+) -> list[Image.Image]:
     """Build the full carousel: cover + up to N event slides + CTA.
 
     IG carousels cap at 10 slides. We use cover + CTA + up to 8 events
-    to leave headroom. If there are more than 8 events in a week, we
-    sort by start time and pick the earliest 8."""
+    to leave headroom. If there are more events than the cap, we
+    sort by start time and pick the earliest.
+
+    period_label is passed through to the cover slide ("this week" /
+    "this weekend") so the same builder works for both modes."""
     sorted_events = sorted(
         events,
         key=lambda e: _parse_event_dt(e.get("start_date")) or datetime.max.replace(tzinfo=timezone.utc),
@@ -412,7 +445,7 @@ def build_carousel(events: list[dict], monday_utc: datetime, sunday_utc: datetim
 
     slides: list[Image.Image] = []
     total_events = len(capped)
-    slides.append(build_cover(monday_utc, sunday_utc))
+    slides.append(build_cover(start_utc, end_utc, period_label=period_label))
     for idx, ev in enumerate(capped, start=1):
         slides.append(build_event(ev, idx, total_events))
     slides.append(build_cta())

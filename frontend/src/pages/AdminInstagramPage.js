@@ -28,17 +28,29 @@ export default function AdminInstagramPage() {
   const [params] = useSearchParams();
   const token = params.get('token') || '';
 
+  // Mode controls whether the carousel covers Mon-Sun ("week") or
+  // Fri-Sun ("weekend"). Date picker anchor changes meaning per mode.
+  const [mode, setMode] = useState('week');
   const [weekStart, setWeekStart] = useState(defaultMonday());
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [data, setData] = useState(null);
+
+  // When the mode flips, swap the anchor date so the picker is showing
+  // the right kind of day-of-week. Avoids the situation where user
+  // switches to weekend mode but the picker still has a Monday in it,
+  // confusing the resulting window.
+  const handleModeChange = (newMode) => {
+    setMode(newMode);
+    setWeekStart(newMode === 'weekend' ? defaultFriday() : defaultMonday());
+  };
 
   const fetchPreview = useCallback(async () => {
     if (!token) return;
     setLoading(true);
     try {
       const res = await axios.get(`${API_URL}/api/admin/instagram/preview`, {
-        params: { token, week_start: weekStart },
+        params: { token, week_start: weekStart, mode },
       });
       setData(res.data);
     } catch (err) {
@@ -46,7 +58,7 @@ export default function AdminInstagramPage() {
     } finally {
       setLoading(false);
     }
-  }, [token, weekStart]);
+  }, [token, weekStart, mode]);
 
   useEffect(() => { fetchPreview(); }, [fetchPreview]);
 
@@ -55,7 +67,7 @@ export default function AdminInstagramPage() {
     setDownloading(true);
     try {
       const res = await axios.get(`${API_URL}/api/admin/instagram/download`, {
-        params: { token, week_start: weekStart },
+        params: { token, week_start: weekStart, mode },
         responseType: 'blob',
       });
       // Trigger a browser download
@@ -65,7 +77,7 @@ export default function AdminInstagramPage() {
       // Server sent a Content-Disposition header — extract filename if present
       const cd = res.headers['content-disposition'] || '';
       const match = /filename="?([^";]+)"?/.exec(cd);
-      a.download = match ? match[1] : `localdrift_carousel_${weekStart}.zip`;
+      a.download = match ? match[1] : `localdrift_carousel_${mode}_${weekStart}.zip`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -108,13 +120,37 @@ export default function AdminInstagramPage() {
         </Button>
       </div>
 
-      {/* Week picker + metadata */}
+      {/* Mode + date picker + metadata */}
       <Card className="mb-6 dark:border-white/10">
         <CardContent className="p-4">
+          {/* Mode toggle row */}
+          <div className="flex items-center gap-2 mb-4 flex-wrap">
+            <span className="text-xs font-medium text-muted-foreground mr-1">Format:</span>
+            <Button
+              variant={mode === 'week' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => handleModeChange('week')}
+              className="rounded-full"
+              data-testid="ig-mode-week"
+            >
+              Full week (Mon–Sun)
+            </Button>
+            <Button
+              variant={mode === 'weekend' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => handleModeChange('weekend')}
+              className="rounded-full"
+              data-testid="ig-mode-weekend"
+            >
+              Weekend (Fri–Sun)
+            </Button>
+          </div>
+
           <div className="flex flex-wrap items-end gap-4">
             <div className="flex flex-col gap-1">
               <label className="text-xs font-medium text-muted-foreground flex items-center gap-1">
-                <Calendar className="h-3 w-3" /> Week starting (Monday)
+                <Calendar className="h-3 w-3" />
+                {mode === 'weekend' ? 'Weekend starting (Friday)' : 'Week starting (Monday)'}
               </label>
               <Input
                 type="date"
@@ -129,7 +165,9 @@ export default function AdminInstagramPage() {
               <div className="flex items-center gap-2 ml-auto flex-wrap">
                 <Badge variant="secondary">{data.event_count} events</Badge>
                 <Badge variant="outline">{data.slide_count} slides</Badge>
-                <Badge className="bg-primary/80">{data.week_label}</Badge>
+                <Badge className="bg-primary/80">
+                  {data.period_label || 'this week'} · {data.week_label}
+                </Badge>
               </div>
             )}
           </div>
@@ -204,5 +242,20 @@ function defaultMonday() {
   const daysUntilMonday = (8 - now.getDay()) % 7 || 7;
   const next = new Date(now);
   next.setDate(now.getDate() + daysUntilMonday);
-  return `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}-${String(next.getDate()).padStart(2, '0')}`;
+  return formatDate(next);
+}
+
+// Default to the next upcoming Friday. If today IS Friday, use today
+// (a Friday-morning post for "this weekend" still wants today's window).
+function defaultFriday() {
+  const now = new Date();
+  // JS getDay(): Sun=0, Mon=1, ..., Fri=5, Sat=6
+  const daysUntilFriday = (5 - now.getDay() + 7) % 7;
+  const next = new Date(now);
+  next.setDate(now.getDate() + daysUntilFriday);
+  return formatDate(next);
+}
+
+function formatDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }

@@ -2599,14 +2599,18 @@ async def admin_instagram_preview(
     request: Request,
     token: Optional[str] = None,
     week_start: Optional[str] = None,
+    mode: str = "week",
 ):
     """Render the carousel and return base64-encoded JPEG thumbnails for
     each slide. Used by the admin UI for visual review before download.
 
-    week_start (optional): YYYY-MM-DD anchor for the Monday of the
-    target week. Defaults to the upcoming Monday in Eastern Time."""
+    week_start (optional): YYYY-MM-DD anchor for the Monday (week mode)
+    or Friday (weekend mode) of the target span. Defaults to the next
+    upcoming Mon / Fri in Eastern Time.
+
+    mode: "week" (Mon-Sun) or "weekend" (Fri-Sun). Defaults to "week"."""
     _check_admin(request, token)
-    return await _instagram_runner.preview(db, week_start=week_start)
+    return await _instagram_runner.preview(db, week_start=week_start, mode=mode)
 
 
 @api_router.get("/admin/instagram/download")
@@ -2614,13 +2618,17 @@ async def admin_instagram_download(
     request: Request,
     token: Optional[str] = None,
     week_start: Optional[str] = None,
+    mode: str = "week",
 ):
     """Return the full-resolution carousel as a ZIP of PNGs. Filename
-    encodes the week so successive downloads don't overwrite each
-    other in the user's downloads folder."""
+    encodes the mode + start date so successive downloads (e.g., a week
+    carousel + a weekend carousel for the same week) don't overwrite
+    each other in the user's downloads folder."""
     from fastapi.responses import Response
     _check_admin(request, token)
-    data, filename = await _instagram_runner.zip_bytes(db, week_start=week_start)
+    data, filename = await _instagram_runner.zip_bytes(
+        db, week_start=week_start, mode=mode,
+    )
     return Response(
         content=data,
         media_type="application/zip",
