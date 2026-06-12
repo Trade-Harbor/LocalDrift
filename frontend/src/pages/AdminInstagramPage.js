@@ -28,8 +28,12 @@ export default function AdminInstagramPage() {
   const [params] = useSearchParams();
   const token = params.get('token') || '';
 
-  // Mode controls whether the carousel covers Mon-Sun ("week") or
-  // Fri-Sun ("weekend"). Date picker anchor changes meaning per mode.
+  // Mode controls the date window:
+  //   "week"    — Mon-Sun (7 days, the full week)
+  //   "weekday" — Mon-Fri (5 days, no weekend)
+  //   "weekend" — Fri-Sun (3 days, weekend only)
+  // Date picker anchor changes meaning per mode (Monday for week/weekday,
+  // Friday for weekend).
   const [mode, setMode] = useState('week');
   const [weekStart, setWeekStart] = useState(defaultMonday());
   const [loading, setLoading] = useState(false);
@@ -42,6 +46,7 @@ export default function AdminInstagramPage() {
   // confusing the resulting window.
   const handleModeChange = (newMode) => {
     setMode(newMode);
+    // Weekend mode anchors on a Friday; week + weekday both anchor on a Monday.
     setWeekStart(newMode === 'weekend' ? defaultFriday() : defaultMonday());
   };
 
@@ -134,6 +139,15 @@ export default function AdminInstagramPage() {
               data-testid="ig-mode-week"
             >
               Full week (Mon–Sun)
+            </Button>
+            <Button
+              variant={mode === 'weekday' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => handleModeChange('weekday')}
+              className="rounded-full"
+              data-testid="ig-mode-weekday"
+            >
+              Weekdays (Mon–Fri)
             </Button>
             <Button
               variant={mode === 'weekend' ? 'default' : 'outline'}

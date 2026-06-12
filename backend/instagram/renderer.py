@@ -241,6 +241,18 @@ def weekend_window(start_date: datetime | None = None) -> tuple[datetime, dateti
     return friday_local.astimezone(timezone.utc), sunday_local.astimezone(timezone.utc)
 
 
+def weekday_window(start_date: datetime | None = None) -> tuple[datetime, datetime]:
+    """Return Monday 00:00 ET through Friday 23:59 ET, as UTC datetimes.
+    The "weekdays" carousel — five days, Mon-Fri. Useful for "this week's
+    weekday picks" posts that pair with a weekend carousel.
+    If start_date is None, returns the upcoming Mon-Fri."""
+    now = (start_date or datetime.now(timezone.utc)).astimezone(ET)
+    days_to_monday = (7 - now.weekday()) % 7 if now.weekday() != 0 else 0
+    monday_local = (now + timedelta(days=days_to_monday)).replace(hour=0, minute=0, second=0, microsecond=0)
+    friday_local = monday_local + timedelta(days=4, hours=23, minutes=59, seconds=59)
+    return monday_local.astimezone(timezone.utc), friday_local.astimezone(timezone.utc)
+
+
 def range_label(start_utc: datetime, end_utc: datetime) -> str:
     """Format a date range as "Jun 8 – 14" (same month) or "Jun 30 – Jul 6"
     (cross-month). Works for both Mon-Sun weeks and Fri-Sun weekends."""
@@ -254,6 +266,72 @@ def range_label(start_utc: datetime, end_utc: datetime) -> str:
 # Backward-compat alias — older callers (Reddit bot, tests) may import week_label.
 # Same implementation, just renamed for clarity now that weekends share it.
 week_label = range_label
+
+
+# ---------- Event selection ----------
+
+def _select_balanced_by_day(events: list[dict], cap: int) -> list[dict]:
+    """Pick up to `cap` events from `events`, ensuring each calendar day
+    (in ET) with events gets representation before any single day
+    monopolizes the carousel.
+
+    Why: a strict chronological pick of the first 8 events would let a
+    concert-heavy Friday + Saturday fill all 8 slots before Sunday gets a
+    look-in. For a 3-day weekend or 5-day weekday carousel, the user
+    expects each day to show up.
+
+    Algorithm:
+      1. Group events by their start date in ET (the day a viewer would
+         say the event "is on")
+      2. Within each day, sort earliest-first
+      3. Round-robin pick one event per day in calendar order, looping
+         until cap is reached or all days exhausted
+      4. Re-sort the final selection chronologically so the carousel
+         reads in date order
+
+    Events with no parseable start_date sort last.
+    """
+    from collections import defaultdict
+
+    by_day: dict = defaultdict(list)
+    no_date: list[dict] = []
+
+    for ev in events:
+        dt = _parse_event_dt(ev.get("start_date"))
+        if dt is None:
+            no_date.append(ev)
+            continue
+        day_key = dt.astimezone(ET).date()
+        by_day[day_key].append(ev)
+
+    # Sort each day's events chronologically
+    sort_key = lambda e: _parse_event_dt(e.get("start_date")) or datetime.max.replace(tzinfo=timezone.utc)
+    for day in by_day:
+        by_day[day].sort(key=sort_key)
+
+    selected: list[dict] = []
+    ordered_days = sorted(by_day.keys())
+    indices = {day: 0 for day in ordered_days}
+
+    while len(selected) < cap:
+        progressed = False
+        for day in ordered_days:
+            if indices[day] < len(by_day[day]):
+                selected.append(by_day[day][indices[day]])
+                indices[day] += 1
+                progressed = True
+                if len(selected) >= cap:
+                    break
+        if not progressed:
+            break  # every day exhausted
+
+    # Pad with date-less events if we still have room
+    if len(selected) < cap and no_date:
+        selected.extend(no_date[: cap - len(selected)])
+
+    # Final chronological sort so the carousel reads in date order
+    selected.sort(key=sort_key)
+    return selected
 
 
 # ---------- Slide builders ----------
@@ -437,11 +515,7 @@ def build_carousel(
 
     period_label is passed through to the cover slide ("this week" /
     "this weekend") so the same builder works for both modes."""
-    sorted_events = sorted(
-        events,
-        key=lambda e: _parse_event_dt(e.get("start_date")) or datetime.max.replace(tzinfo=timezone.utc),
-    )
-    capped = sorted_events[:8]
+    capped = _select_balanced_by_day(events, cap=8)
 
     slides: list[Image.Image] = []
     total_events = len(capped)

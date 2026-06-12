@@ -29,7 +29,13 @@ from typing import Optional
 from PIL import Image
 
 from .fetcher import fetch_week_events
-from .renderer import build_carousel, range_label, week_window, weekend_window
+from .renderer import (
+    build_carousel,
+    range_label,
+    week_window,
+    weekday_window,
+    weekend_window,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +58,9 @@ def _resolve_window(
     if mode == "weekend":
         start, end = weekend_window(anchor)
         period_label = "this weekend"
+    elif mode == "weekday":
+        start, end = weekday_window(anchor)
+        period_label = "this week · weekdays"
     else:
         start, end = week_window(anchor)
         period_label = "this week"
@@ -78,7 +87,7 @@ async def preview(
     slides = build_carousel(events, start_utc, end_utc, period_label=period_label)
 
     return {
-        "mode": mode if mode in {"week", "weekend"} else "week",
+        "mode": mode if mode in {"week", "weekend", "weekday"} else "week",
         "period_label": period_label,
         "week_label": range_label(start_utc, end_utc),
         "monday_utc": start_utc.isoformat(),  # legacy key kept for backwards-compat
@@ -116,7 +125,7 @@ async def zip_bytes(
             img.save(png_buf, format="PNG", optimize=True)
             zf.writestr(_slide_name(i, len(slides)) + ".png", png_buf.getvalue())
 
-    mode_tag = "weekend" if mode == "weekend" else "week"
+    mode_tag = mode if mode in {"weekend", "weekday"} else "week"
     filename = f"localdrift_carousel_{mode_tag}_{start_utc.strftime('%Y-%m-%d')}.zip"
     return buf.getvalue(), filename
 
