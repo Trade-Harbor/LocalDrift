@@ -2604,11 +2604,12 @@ async def admin_instagram_preview(
     """Render the carousel and return base64-encoded JPEG thumbnails for
     each slide. Used by the admin UI for visual review before download.
 
-    week_start (optional): YYYY-MM-DD anchor for the Monday (week mode)
-    or Friday (weekend mode) of the target span. Defaults to the next
-    upcoming Mon / Fri in Eastern Time.
+    week_start (optional): YYYY-MM-DD anchor for the Monday (week /
+    weekday mode) or Friday (weekend mode) of the target span. Defaults
+    to the next upcoming Mon / Fri in Eastern Time.
 
-    mode: "week" (Mon-Sun) or "weekend" (Fri-Sun). Defaults to "week"."""
+    mode: "week" (Mon-Sun), "weekday" (Mon-Fri), or "weekend" (Fri-Sun).
+    Defaults to "week"."""
     _check_admin(request, token)
     return await _instagram_runner.preview(db, week_start=week_start, mode=mode)
 
