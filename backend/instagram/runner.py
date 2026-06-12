@@ -1,18 +1,21 @@
 """Orchestrator for the Instagram carousel generator.
 
 Two public entry points:
-  preview(db, week_start)
+  preview(db, start_date, mode)
     Returns a dict with metadata + base64-encoded JPEG thumbnails of
     each slide. Used by the admin preview page so the operator can see
     the slides before downloading.
 
-  zip_bytes(db, week_start)
+  zip_bytes(db, start_date, mode)
     Renders all slides at full resolution and returns a ZIP file in
     memory containing one PNG per slide, named so they sort in carousel
     order when uploaded to IG.
 
-Both functions accept an optional `week_start` (ISO date "YYYY-MM-DD").
-If omitted, defaults to the upcoming Monday in Eastern Time.
+Both functions accept:
+  start_date — optional ISO date "YYYY-MM-DD". Interpreted as the
+               Monday (mode=week) or Friday (mode=weekend) of the
+               target span. Defaults to the next upcoming Mon / Fri.
+  mode       — "week" (Mon-Sun) or "weekend" (Fri-Sun).
 """
 from __future__ import annotations
 
@@ -26,22 +29,33 @@ from typing import Optional
 from PIL import Image
 
 from .fetcher import fetch_week_events
-from .renderer import build_carousel, week_label, week_window
+from .renderer import build_carousel, range_label, week_window, weekend_window
 
 logger = logging.getLogger(__name__)
 
 
-def _resolve_week(week_start: Optional[str]) -> tuple[datetime, datetime]:
-    """Convert an optional 'YYYY-MM-DD' Monday hint into the (monday_utc,
-    sunday_utc) tuple the renderer + fetcher both want."""
-    if week_start:
+def _resolve_window(
+    start_date: Optional[str], mode: str
+) -> tuple[datetime, datetime, str]:
+    """Pick the right (start_utc, end_utc) tuple based on mode, plus the
+    human-readable sub-headline ("this week" / "this weekend") to bake
+    into the cover slide. Bad mode string falls back to "week".
+    """
+    if start_date:
         try:
-            anchor = datetime.fromisoformat(week_start).replace(tzinfo=timezone.utc)
+            anchor = datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc)
         except ValueError:
             anchor = None
     else:
         anchor = None
-    return week_window(anchor)
+
+    if mode == "weekend":
+        start, end = weekend_window(anchor)
+        period_label = "this weekend"
+    else:
+        start, end = week_window(anchor)
+        period_label = "this week"
+    return start, end, period_label
 
 
 def _slide_to_jpeg_b64(img: Image.Image, max_dim: int = 540) -> str:
@@ -55,16 +69,22 @@ def _slide_to_jpeg_b64(img: Image.Image, max_dim: int = 540) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-async def preview(db, week_start: Optional[str] = None) -> dict:
+async def preview(
+    db, week_start: Optional[str] = None, mode: str = "week"
+) -> dict:
     """Render every slide and return previews + metadata for the admin UI."""
-    monday_utc, sunday_utc = _resolve_week(week_start)
-    events = await fetch_week_events(db, monday_utc, sunday_utc)
-    slides = build_carousel(events, monday_utc, sunday_utc)
+    start_utc, end_utc, period_label = _resolve_window(week_start, mode)
+    events = await fetch_week_events(db, start_utc, end_utc)
+    slides = build_carousel(events, start_utc, end_utc, period_label=period_label)
 
     return {
-        "week_label": week_label(monday_utc, sunday_utc),
-        "monday_utc": monday_utc.isoformat(),
-        "sunday_utc": sunday_utc.isoformat(),
+        "mode": mode if mode in {"week", "weekend"} else "week",
+        "period_label": period_label,
+        "week_label": range_label(start_utc, end_utc),
+        "monday_utc": start_utc.isoformat(),  # legacy key kept for backwards-compat
+        "sunday_utc": end_utc.isoformat(),
+        "start_utc": start_utc.isoformat(),
+        "end_utc": end_utc.isoformat(),
         "event_count": len(events),
         "slide_count": len(slides),
         "slides": [
@@ -78,12 +98,16 @@ async def preview(db, week_start: Optional[str] = None) -> dict:
     }
 
 
-async def zip_bytes(db, week_start: Optional[str] = None) -> tuple[bytes, str]:
+async def zip_bytes(
+    db, week_start: Optional[str] = None, mode: str = "week"
+) -> tuple[bytes, str]:
     """Build the carousel + ZIP every slide as a PNG. Returns
-    (zip_bytes, suggested_filename)."""
-    monday_utc, sunday_utc = _resolve_week(week_start)
-    events = await fetch_week_events(db, monday_utc, sunday_utc)
-    slides = build_carousel(events, monday_utc, sunday_utc)
+    (zip_bytes, suggested_filename). Filename includes the mode so
+    successive downloads (week + weekend for the same calendar week)
+    don't overwrite each other."""
+    start_utc, end_utc, period_label = _resolve_window(week_start, mode)
+    events = await fetch_week_events(db, start_utc, end_utc)
+    slides = build_carousel(events, start_utc, end_utc, period_label=period_label)
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -92,7 +116,8 @@ async def zip_bytes(db, week_start: Optional[str] = None) -> tuple[bytes, str]:
             img.save(png_buf, format="PNG", optimize=True)
             zf.writestr(_slide_name(i, len(slides)) + ".png", png_buf.getvalue())
 
-    filename = f"localdrift_carousel_{monday_utc.strftime('%Y-%m-%d')}.zip"
+    mode_tag = "weekend" if mode == "weekend" else "week"
+    filename = f"localdrift_carousel_{mode_tag}_{start_utc.strftime('%Y-%m-%d')}.zip"
     return buf.getvalue(), filename
 
 
