@@ -52,52 +52,9 @@ services:
       - key: YELP_API_KEY
         sync: false           # https://www.yelp.com/developers
 
-  # === Cron: daily ingestion run ===
-  # Runs `python -m ingestion.runner` every day at 09:00 UTC (~5am ET).
-  # Reuses the same env vars as the web service via fromService reference.
-  - type: cron
-    name: nearscene-ingestion-daily
-    runtime: python
-    plan: free
-    rootDir: backend
-    schedule: "0 9 * * *"
-    buildCommand: pip install -r requirements.txt
-    startCommand: python -m ingestion.runner
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.9
-      - key: MONGO_URL
-        fromService:
-          type: web
-          name: nearscene-backend
-          envVarKey: MONGO_URL
-      - key: DB_NAME
-        fromService:
-          type: web
-          name: nearscene-backend
-          envVarKey: DB_NAME
-      - key: PILOT_LAT
-        value: "34.2257"
-      - key: PILOT_LON
-        value: "-77.9447"
-      - key: PILOT_RADIUS_MILES
-        value: "30"
-      - key: PILOT_CITY
-        value: "Wilmington"
-      - key: PILOT_STATE
-        value: "NC"
-      - key: TICKETMASTER_API_KEY
-        fromService:
-          type: web
-          name: nearscene-backend
-          envVarKey: TICKETMASTER_API_KEY
-      - key: SEATGEEK_CLIENT_ID
-        fromService:
-          type: web
-          name: nearscene-backend
-          envVarKey: SEATGEEK_CLIENT_ID
-      - key: YELP_API_KEY
-        fromService:
-          type: web
-          name: nearscene-backend
-          envVarKey: YELP_API_KEY
+  # === Ingestion scheduling ===
+  # Render removed the free plan for cron services, so daily ingestion runs
+  # via cron-job.org instead — it POSTs to /api/admin/ingest once per day.
+  # Dashboard: https://console.cron-job.org/jobs
+  # If you ever want to move scheduling back in-house, add a `type: cron`
+  # block here with a paid plan (e.g. `plan: starter`).
