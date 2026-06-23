@@ -57,6 +57,40 @@ def _enforce_beta_block():
 # Create the main app
 app = FastAPI(title="LocalDrift API")
 
+
+# Root route: small status page so hitting the bare backend URL in a
+# browser shows something useful instead of FastAPI's default 404.
+# Helps when checking from a phone or new machine that the service is up.
+@app.get("/", include_in_schema=False)
+async def root():
+    from fastapi.responses import HTMLResponse
+    html = """<!doctype html>
+<html><head><meta charset="utf-8"><title>LocalDrift API</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 640px;
+         margin: 60px auto; padding: 0 20px; color: #1a3a3a; }
+  h1 { color: #1e6b6b; margin-bottom: 8px; }
+  .status { display: inline-block; padding: 4px 12px; background: #1e6b6b;
+            color: white; border-radius: 12px; font-size: 14px; }
+  code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; }
+  a { color: #1e6b6b; }
+  ul { line-height: 1.8; }
+</style></head>
+<body>
+  <h1>LocalDrift API</h1>
+  <p><span class="status">running</span></p>
+  <p>This is the backend service for <a href="https://localdrift.app">localdrift.app</a>.
+     Nothing to see here — it serves JSON, not pages.</p>
+  <h3>Useful endpoints</h3>
+  <ul>
+    <li><a href="/api/health">/api/health</a> — liveness check</li>
+    <li><a href="/docs">/docs</a> — interactive API reference (Swagger)</li>
+    <li><code>/api/admin/ingestion-runs?token=…</code> — last ingestion run history</li>
+    <li><code>POST /api/admin/ingest?token=…</code> — trigger a fresh data pull</li>
+  </ul>
+</body></html>"""
+    return HTMLResponse(content=html)
+
 # Create routers
 api_router = APIRouter(prefix="/api")
 auth_router = APIRouter(prefix="/api/auth")
