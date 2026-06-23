@@ -3603,12 +3603,41 @@ def _check_admin(request: Request, token_query: Optional[str]):
 
 
 @api_router.post("/admin/ingest")
-async def admin_trigger_ingest(request: Request, token: Optional[str] = None):
-    """Trigger an ingestion run. Pass token via ?token=... or X-Admin-Token header."""
+async def admin_trigger_ingest(
+    request: Request,
+    token: Optional[str] = None,
+    wait: bool = False,
+):
+    """Trigger an ingestion run. Pass token via ?token=... or X-Admin-Token header.
+
+    Defaults to fire-and-forget so scheduled HTTP callers (cron-job.org) get
+    an immediate 200 instead of timing out on the 60-90s run. The actual
+    ingestion runs in a background asyncio task; check /admin/ingestion-runs
+    a minute later to see the results.
+
+    Pass ?wait=true if you want the call to block until ingestion finishes
+    and return the full summary (useful for ad-hoc local debugging).
+    """
     _check_admin(request, token)
     from ingestion.runner import run_all
-    summary = await run_all()
-    return summary
+
+    if wait:
+        summary = await run_all()
+        return summary
+
+    # Fire-and-forget: schedule the run on the event loop and return now.
+    # Exceptions inside the task are logged but don't reach the caller.
+    async def _run_in_background():
+        try:
+            await run_all()
+        except Exception:
+            logging.exception("Background ingestion run failed")
+
+    asyncio.create_task(_run_in_background())
+    return {
+        "status": "started",
+        "message": "Ingestion running in background. Check /admin/ingestion-runs in ~60s for results.",
+    }
 
 
 @api_router.get("/admin/ingestion-runs")
