@@ -35,6 +35,8 @@ const API_URL = process.env.REACT_APP_BACKEND_URL;
 const CATEGORIES = [
   { value: 'all', label: 'All Categories' },
   { value: 'concert', label: 'Concerts' },
+  { value: 'theater', label: 'Theater' },
+  { value: 'comedy', label: 'Comedy' },
   { value: 'parade', label: 'Parades' },
   { value: 'marathon', label: 'Marathons' },
   { value: 'market', label: 'Markets' },

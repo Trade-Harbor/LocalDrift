@@ -45,6 +45,8 @@ FONTS_DIR = Path(__file__).parent / "fonts"
 # Category labels for the per-event badge (mirrors reddit_bot/formatter.py)
 CATEGORY_LABEL = {
     "concert": "CONCERT",
+    "theater": "THEATER",
+    "comedy": "COMEDY",
     "parade": "PARADE",
     "marathon": "RACE",
     "market": "MARKET",
@@ -60,6 +62,8 @@ CATEGORY_LABEL = {
 # in a carousel without losing the LocalDrift teal identity.
 CATEGORY_COLOR = {
     "concert": (138, 99, 210),
+    "theater": (167, 99, 138),       # deep rose — distinguishable from concert purple
+    "comedy": (235, 175, 80),        # warm amber
     "parade": (216, 99, 138),
     "marathon": (216, 138, 99),
     "market": (99, 167, 138),

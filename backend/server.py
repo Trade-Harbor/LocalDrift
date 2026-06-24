@@ -611,6 +611,8 @@ def escape_html(s: str) -> str:
 
 EVENT_CATEGORIES = [
     {"name": "concert", "label": "Concerts", "icon": "Music"},
+    {"name": "theater", "label": "Theater", "icon": "Theater"},
+    {"name": "comedy", "label": "Comedy", "icon": "Mic"},
     {"name": "parade", "label": "Parades", "icon": "Flag"},
     {"name": "marathon", "label": "Marathons", "icon": "Timer"},
     {"name": "market", "label": "Markets", "icon": "ShoppingBag"},
@@ -3646,6 +3648,74 @@ async def admin_get_ingestion_runs(request: Request, token: Optional[str] = None
     _check_admin(request, token)
     runs = await db.ingestion_runs.find({}, {"_id": 0}).sort("started_at", -1).to_list(limit)
     return runs
+
+
+@api_router.post("/admin/reclassify-events")
+async def admin_reclassify_events(
+    request: Request,
+    token: Optional[str] = None,
+    dry_run: bool = True,
+):
+    """One-shot backfill: re-run the category mapper on every TM/SG-sourced
+    event title and update the category in place where it changed.
+
+    Use after updating map_category_from_text to fix existing rows that
+    were classified before the mapper learned about new categories
+    (theater, comedy). Idempotent — running twice changes nothing the
+    second time.
+
+    Hand-curated events (community sources, bulk-imported events like the
+    Sharks games) are left alone — we only touch rows whose
+    organizer_id starts with "source_" (Ticketmaster + SeatGeek).
+
+    Defaults to dry_run=true so you can preview the change set before
+    committing. Pass ?dry_run=false to actually write.
+    """
+    _check_admin(request, token)
+    from ingestion.utils import map_category_from_text
+
+    changes: list[dict] = []
+    cursor = db.events.find(
+        {"organizer_id": {"$regex": "^source_"}},
+        {"event_id": 1, "title": 1, "location_name": 1, "category": 1,
+         "organizer_id": 1},
+    )
+    async for ev in cursor:
+        title = ev.get("title") or ""
+        venue = ev.get("location_name") or ""
+        old_cat = ev.get("category") or "other"
+        # Feed title + venue into the mapper. Venue is a strong signal for
+        # plain show titles like "Gypsy" or "Luke Null" that on their own
+        # carry no category hint — but venues like "Dead Crow Comedy Room"
+        # and "Thalian Hall" do.
+        new_cat = map_category_from_text(f"{title} {venue}")
+        if new_cat != old_cat and new_cat != "other":
+            changes.append({
+                "event_id": ev["event_id"],
+                "title": title[:80],
+                "old": old_cat,
+                "new": new_cat,
+            })
+            if not dry_run:
+                await db.events.update_one(
+                    {"event_id": ev["event_id"]},
+                    {"$set": {"category": new_cat}},
+                )
+
+    # Tally for the summary block
+    from collections import Counter
+    transition_counts = Counter((c["old"], c["new"]) for c in changes)
+
+    return {
+        "dry_run": dry_run,
+        "scanned_source_events_only": True,
+        "changes_count": len(changes),
+        "transitions": [
+            {"from": k[0], "to": k[1], "count": v}
+            for k, v in transition_counts.most_common()
+        ],
+        "sample_changes": changes[:50],
+    }
 
 
 @api_router.get("/admin/test-yelp-chains")

@@ -137,25 +137,67 @@ def parse_iso_safe(s: Optional[str]) -> Optional[datetime]:
 
 
 def map_category_from_text(text: str) -> str:
-    """Best-effort mapping from external category strings to LocalDrift categories."""
+    """Best-effort mapping from external category strings to LocalDrift categories.
+
+    Order matters: theater + comedy are checked BEFORE music/concert because
+    Ticketmaster classifies a Broadway show as "Arts & Theatre Theatre Musical"
+    — the substring "music" inside "musical" used to false-match into concert.
+    Same for stand-up: TM ships it as "Arts & Theatre Comedy".
+    """
     if not text:
         return "other"
     t = text.lower()
-    if any(k in t for k in ["concert", "music", "band", "dj", "festival"]):
+
+    # Comedy FIRST — TM ships stand-up as "Arts & Theatre Comedy", so we
+    # have to catch "comedy" before "theatre" or every comedy show ends up
+    # tagged as theater
+    if any(k in t for k in [
+        "comedy", "comedian", "stand-up", "standup",
+        "dead crow",  # the Wilmington comedy venue
+    ]):
+        return "comedy"
+
+    # Theater next — before music, because "music" matches "musical".
+    # CAREFUL: "theater"/"theatre" appears in "amphitheater" too, which is a
+    # concert venue, not a theater. Exclude that explicitly. Same kind of
+    # false-positive shielding goes for any compound word containing the
+    # token.
+    is_amphitheater = "amphitheater" in t or "amphitheatre" in t
+    theater_words = [
+        "theatre", "theater", "musical", "broadway", "opera", "ballet",
+        "playhouse", "stage show", "the play",
+        "thalian hall",  # Wilmington's flagship theater venue
+    ]
+    if not is_amphitheater and any(k in t for k in theater_words):
+        return "theater"
+
+    # Sports (note: "race" intentionally removed here to avoid false matches)
+    if any(k in t for k in [
+        "sport", "football", "basketball", "baseball", "hockey", "soccer",
+        "nba", "nfl", "mlb", "nhl", "wrestling", "boxing", "ufc",
+        "tennis", "golf", "lacrosse", "volleyball", "rugby", "cycling",
+    ]):
+        if "marathon" in t or "5k" in t or "10k" in t:
+            return "marathon"
+        return "sports"
+
+    # Marathons / road races
+    if "marathon" in t or "5k" in t or "10k" in t or " race" in t or "road race" in t:
+        return "marathon"
+
+    # Music / concert
+    if any(k in t for k in ["concert", "music", "band", "dj"]):
         if "food" in t:
             return "food_festival"
         return "concert"
-    if any(k in t for k in ["sport", "football", "basketball", "baseball", "hockey", "soccer",
-                              "race", "nba", "nfl", "mlb", "nhl", "wrestling", "boxing", "ufc",
-                              "tennis", "golf", "lacrosse", "volleyball", "rugby", "cycling"]):
-        if "marathon" in t or "run" in t:
-            return "marathon"
-        return "sports"
+
     if "parade" in t:
         return "parade"
-    if "marathon" in t or "5k" in t or "10k" in t:
-        return "marathon"
-    if "market" in t or "fair" in t or "bazaar" in t:
+    if "festival" in t:
+        if "food" in t or "wine" in t or "beer" in t:
+            return "food_festival"
+        return "concert"  # most non-food festivals are music-driven
+    if "market" in t or " fair" in t or "bazaar" in t:
         return "market"
     if "happy hour" in t:
         return "happy_hour"
@@ -163,6 +205,6 @@ def map_category_from_text(text: str) -> str:
         return "garage_sale"
     if "food" in t or "wine" in t or "beer" in t or "tasting" in t:
         return "food_festival"
-    if any(k in t for k in ["theater", "theatre", "comedy", "show", "performance"]):
-        return "concert"
+    if "show" in t or "performance" in t:
+        return "concert"  # generic fallback for live performance
     return "other"
