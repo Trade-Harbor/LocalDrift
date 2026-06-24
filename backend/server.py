@@ -3604,7 +3604,7 @@ def _check_admin(request: Request, token_query: Optional[str]):
         raise HTTPException(status_code=401, detail="Invalid admin token")
 
 
-@api_router.post("/admin/ingest")
+@api_router.api_route("/admin/ingest", methods=["GET", "POST"])
 async def admin_trigger_ingest(
     request: Request,
     token: Optional[str] = None,
@@ -3650,7 +3650,7 @@ async def admin_get_ingestion_runs(request: Request, token: Optional[str] = None
     return runs
 
 
-@api_router.post("/admin/reclassify-events")
+@api_router.api_route("/admin/reclassify-events", methods=["GET", "POST"])
 async def admin_reclassify_events(
     request: Request,
     token: Optional[str] = None,
