@@ -40,6 +40,8 @@ SECTION_CAP_DEFAULT = 50
 # Category display labels. Keys MUST match backend EventCreate.category values.
 CATEGORY_LABEL = {
     "concert": "Concerts & Live Music",
+    "theater": "Theater & Stage",
+    "comedy": "Comedy",
     "parade": "Parades",
     "marathon": "Races & Marathons",
     "market": "Markets",
@@ -51,8 +53,8 @@ CATEGORY_LABEL = {
     "other": "Other",
 }
 CATEGORY_ORDER = [
-    "concert", "sports", "food_festival", "market", "community",
-    "happy_hour", "parade", "marathon", "garage_sale", "other",
+    "concert", "theater", "comedy", "sports", "food_festival", "market",
+    "community", "happy_hour", "parade", "marathon", "garage_sale", "other",
 ]
 
 
