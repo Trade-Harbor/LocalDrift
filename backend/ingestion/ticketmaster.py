@@ -14,6 +14,7 @@ from .utils import (
     PILOT_LAT,
     PILOT_LON,
     PILOT_RADIUS_MILES,
+    PILOT_STATE,
     parse_iso_safe,
     to_iso,
     map_category_from_text,
@@ -95,6 +96,21 @@ def _normalize_event(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     except (TypeError, ValueError):
         lat, lon = None, None
     if lat is None or lon is None:
+        return None
+
+    # Sanity check against TM's internally-inconsistent geocoding.
+    # Real-world case: TM listed an "Outdoors on Chippewa" event with
+    # city=Buffalo/state=NY/zip=14202 but lat+lon pointing at Wilmington NC.
+    # The geo radius search returned it, and the event showed up as local.
+    # Reject anything whose state field disagrees with the pilot region.
+    # Empty state = don't reject (some venues genuinely omit it and are
+    # already inside the radius, we trust the lat/lon).
+    if state and state.upper() != PILOT_STATE.upper():
+        log.info(
+            "Ticketmaster: rejecting out-of-state event title=%r state=%s "
+            "(lat/lon inside pilot radius but venue state mismatches PILOT_STATE=%s)",
+            title, state, PILOT_STATE,
+        )
         return None
 
     # Image: pick the largest 16:9 image if available, else first
