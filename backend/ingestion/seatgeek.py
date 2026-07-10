@@ -15,6 +15,7 @@ from .utils import (
     PILOT_LAT,
     PILOT_LON,
     PILOT_RADIUS_MILES,
+    PILOT_STATE,
     parse_iso_safe,
     to_iso,
     map_category_from_text,
@@ -80,6 +81,19 @@ def _normalize_event(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     except (TypeError, ValueError):
         lat, lon = None, None
     if lat is None or lon is None:
+        return None
+
+    # Sanity check: reject events whose venue state doesn't match the
+    # pilot region even if lat/lon fell inside the radius. Prevents
+    # out-of-state events with bad geocoding (e.g. an NY venue mistakenly
+    # returned with NC coordinates) from leaking into the local feed.
+    state = venue.get("state") or ""
+    if state and state.upper() != PILOT_STATE.upper():
+        log.info(
+            "SeatGeek: rejecting out-of-state event title=%r state=%s "
+            "(lat/lon inside pilot radius but venue state mismatches PILOT_STATE=%s)",
+            title, state, PILOT_STATE,
+        )
         return None
 
     # Pricing — SeatGeek events are ticketed; mark is_paid=True even when the
